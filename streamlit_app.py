@@ -6,7 +6,7 @@ import yfinance as yf
 st.set_page_config(page_title="Market Indicators App", layout="wide")
 
 # --- Sidebar
-ticker = st.sidebar.text_input("Ticker", "AAPL")
+ticker = st.sidebar.text_input("Ticker", "AAPL").upper()
 period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
 interval = st.sidebar.selectbox("Interval", ["1d", "1h", "30m"], index=0)
 
@@ -61,35 +61,41 @@ def macd(series, fast=12, slow=26, signal=9):
     }, index=series.index)
 
 # Calculate indicators
+# Flatten columns in df if MultiIndex exists
+if isinstance(df.columns, pd.MultiIndex):
+    df.columns = ['_'.join(filter(None, map(str, col))).strip() for col in df.columns.values]
+
 df["SMA20"] = sma(df["Close"], 20)
 df["EMA50"] = ema(df["Close"], 50)
 df["RSI14"] = rsi(df["Close"], 14)
 macd_df = macd(df["Close"])
 
-# Flatten columns in df if MultiIndex exists
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = ['_'.join(filter(None, map(str, col))).strip() for col in df.columns.values]
-
-# Reset index to columns
 df_reset = df.reset_index()
 macd_reset = macd_df.reset_index()
 
-# Merge on 'Date' (now both flat columns)
 df_joined = pd.merge(df_reset, macd_reset, on="Date", how="left")
-
-# Restore index as Date
 df_joined.set_index("Date", inplace=True)
 df = df_joined
+
+# Detect which Close column to use
+close_col = None
+if f"Close_{ticker}" in df.columns:
+    close_col = f"Close_{ticker}"
+elif "Close" in df.columns:
+    close_col = "Close"
+else:
+    st.error(f"Close price column not found for ticker {ticker}")
+    st.stop()
 
 # --- Display
 st.title(f"{ticker} — Technical Indicators")
 
-# Use updated column name here for Close
-st.line_chart(df[["Close_" + ticker, "SMA20", "EMA50"]])
+st.line_chart(df[[close_col, "SMA20", "EMA50"]])
 st.line_chart(df[["RSI14"]])
 st.line_chart(df[["MACD", "MACD_signal"]])
 
 st.write(df.tail(10))
+
 
 
 
