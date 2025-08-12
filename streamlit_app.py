@@ -41,20 +41,30 @@ def rsi(series, length):
     return rsi
 
 def macd(series, fast=12, slow=26, signal=9):
+    # Ensure input is 1D pandas Series
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    elif isinstance(series, np.ndarray) and series.ndim > 1:
+        series = series.flatten()
+
     series = pd.Series(series)
+
     if len(series) < slow:
         raise ValueError(f"Input series length must be at least {slow} for MACD calculation")
+
     ema_fast = ema(series, fast)
     ema_slow = ema(series, slow)
     macd_line = ema_fast - ema_slow
     signal_line = ema(macd_line, signal)
     histogram = macd_line - signal_line
+
     return pd.DataFrame({
         "MACD": macd_line,
         "MACD_signal": signal_line,
         "MACD_hist": histogram
     }, index=series.index)
 
+# Calculate indicators
 df["SMA20"] = sma(df["Close"], 20)
 df["EMA50"] = ema(df["Close"], 50)
 df["RSI14"] = rsi(df["Close"], 14)
