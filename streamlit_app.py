@@ -49,49 +49,4 @@ def macd(series, fast=12, slow=26, signal=9):
         raise ValueError(f"Input series length must be at least {slow} for MACD calculation")
 
     ema_fast = ema(series, fast)
-    ema_slow = ema(series, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = ema(macd_line, signal)
-    histogram = macd_line - signal_line
 
-    return pd.DataFrame({
-        "MACD": macd_line,
-        "MACD_signal": signal_line,
-        "MACD_hist": histogram
-    }, index=series.index)
-
-# Calculate indicators
-df["SMA20"] = sma(df["Close"], 20)
-df["EMA50"] = ema(df["Close"], 50)
-df["RSI14"] = rsi(df["Close"], 14)
-macd_df = macd(df["Close"])
-
-# Reset index to columns
-df_reset = df.reset_index()
-macd_reset = macd_df.reset_index()
-
-# DEBUG: Print column info before merge
-st.write("df_reset columns:", df_reset.columns.tolist())
-st.write("macd_reset columns:", macd_reset.columns.tolist())
-
-# DEBUG: Check if 'Date' column exists and types
-st.write("df_reset 'Date' dtype:", df_reset['Date'].dtype)
-st.write("macd_reset 'Date' dtype:", macd_reset['Date'].dtype)
-
-# DEBUG: Check for duplicates in 'Date' columns
-st.write("df_reset 'Date' duplicates:", df_reset['Date'].duplicated().sum())
-st.write("macd_reset 'Date' duplicates:", macd_reset['Date'].duplicated().sum())
-
-# Attempt merge on 'Date'
-df_joined = pd.merge(df_reset, macd_reset, on="Date", how="left")
-
-# Restore Date index
-df_joined.set_index("Date", inplace=True)
-df = df_joined
-
-# --- Display
-st.title(f"{ticker} — Technical Indicators")
-st.line_chart(df[["Close", "SMA20", "EMA50"]])
-st.line_chart(df[["RSI14"]])
-st.line_chart(df[["MACD", "MACD_signal"]])
-st.write(df.tail(10))
