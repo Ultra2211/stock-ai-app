@@ -41,16 +41,22 @@ def rsi(series, length):
     return rsi
 
 def macd(series, fast=12, slow=26, signal=9):
+    if not isinstance(series, pd.Series):
+        raise TypeError("Input must be a pandas Series")
+    if len(series) < slow:
+        raise ValueError(f"Input series length must be at least {slow} for MACD calculation")
+    
     ema_fast = ema(series, fast)
     ema_slow = ema(series, slow)
     macd_line = ema_fast - ema_slow
     signal_line = ema(macd_line, signal)
     histogram = macd_line - signal_line
+    
     return pd.DataFrame({
         "MACD": macd_line,
         "MACD_signal": signal_line,
         "MACD_hist": histogram
-    })
+    }, index=series.index)
 
 df["SMA20"] = sma(df["Close"], 20)
 df["EMA50"] = ema(df["Close"], 50)
@@ -64,3 +70,4 @@ st.line_chart(df[["Close", "SMA20", "EMA50"]])
 st.line_chart(df[["RSI14"]])
 st.line_chart(df[["MACD", "MACD_signal"]])
 st.write(df.tail(10))
+
