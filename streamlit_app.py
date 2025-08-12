@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import yfinance as yf
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Market Indicators App", layout="wide")
+st.set_page_config(page_title="Market Indicators + TradingView", layout="wide")
 
-# --- Sidebar inputs
+# --- Sidebar
 ticker = st.sidebar.text_input("Ticker", "AAPL").upper()
 period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
 interval = st.sidebar.selectbox("Interval", ["1d", "1h", "30m"], index=0)
@@ -22,63 +22,41 @@ if df.empty:
     st.error("No data found.")
     st.stop()
 
-# Flatten columns if MultiIndex
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = ['_'.join([str(c) for c in col if c]) for col in df.columns]
+# --- Indicators (simple moving average example)
+df["SMA20"] = df["Close"].rolling(window=20).mean()
+df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
 
-# Detect close column
-close_col = None
-if f"Close_{ticker}" in df.columns:
-    close_col = f"Close_{ticker}"
-elif "Close" in df.columns:
-    close_col = "Close"
-else:
-    st.error(f"Close price column not found for ticker {ticker}")
-    st.stop()
-
-def sma(series, length):
-    return series.rolling(window=length).mean()
-
-def ema(series, length):
-    return series.ewm(span=length, adjust=False).mean()
-
-def rsi(series, length):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=length).mean()
-    avg_loss = loss.rolling(window=length).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-def macd(series, fast=12, slow=26, signal=9):
-    series = pd.Series(series)
-    ema_fast = ema(series, fast)
-    ema_slow = ema(series, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = ema(macd_line, signal)
-    histogram = macd_line - signal_line
-    return pd.DataFrame({
-        "MACD": macd_line,
-        "MACD_signal": signal_line,
-        "MACD_hist": histogram
-    }, index=series.index)
-
-# Calculate indicators using detected close_col
-df["SMA20"] = sma(df[close_col], 20)
-df["EMA50"] = ema(df[close_col], 50)
-df["RSI14"] = rsi(df[close_col], 14)
-macd_df = macd(df[close_col])
-
-# Merge macd_df into df on index (Date)
-df = df.join(macd_df)
-
-# --- Display
+# --- Display Indicators
 st.title(f"{ticker} — Technical Indicators")
+st.line_chart(df[["Close", "SMA20", "EMA50"]])
 
-st.line_chart(df[[close_col, "SMA20", "EMA50"]])
-st.line_chart(df[["RSI14"]])
-st.line_chart(df[["MACD", "MACD_signal"]])
+# --- Embed TradingView Widget
+tradingview_html = f"""
+<!-- TradingView Widget BEGIN -->
+<div class="tradingview-widget-container">
+  <div id="tradingview_12345"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script type="text/javascript">
+  new TradingView.widget(
+  {{
+    "width": "100%",
+    "height": 500,
+    "symbol": "{ticker}",
+    "interval": "D",
+    "timezone": "Etc/UTC",
+    "theme": "light",
+    "style": "1",
+    "locale": "en",
+    "toolbar_bg": "#f1f3f6",
+    "enable_publishing": false,
+    "allow_symbol_change": true,
+    "container_id": "tradingview_12345"
+  }}
+  );
+  </script>
+</div>
+<!-- TradingView Widget END -->
+"""
 
-st.write(df.tail(10))
+components.html(tradingview_html, height=520, scrolling=True)
+
