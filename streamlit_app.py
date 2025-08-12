@@ -41,12 +41,10 @@ def rsi(series, length):
     return rsi
 
 def macd(series, fast=12, slow=26, signal=9):
-    # Ensure input is 1D pandas Series
     if isinstance(series, pd.DataFrame):
         series = series.iloc[:, 0]
     elif isinstance(series, np.ndarray) and series.ndim > 1:
         series = series.flatten()
-
     series = pd.Series(series)
 
     if len(series) < slow:
@@ -58,20 +56,30 @@ def macd(series, fast=12, slow=26, signal=9):
     signal_line = ema(macd_line, signal)
     histogram = macd_line - signal_line
 
-    df_macd = pd.DataFrame({
+    return pd.DataFrame({
         "MACD": macd_line,
         "MACD_signal": signal_line,
         "MACD_hist": histogram
-    }, index=series.index)  # Ensure matching index
-
-    return df_macd
+    }, index=series.index)
 
 # Calculate indicators
 df["SMA20"] = sma(df["Close"], 20)
 df["EMA50"] = ema(df["Close"], 50)
 df["RSI14"] = rsi(df["Close"], 14)
 macd_df = macd(df["Close"])
-df = df.join(macd_df, how='left')  # Join on index
+
+# Reset index to integers for safe join
+df_reset = df.reset_index()
+macd_reset = macd_df.reset_index()
+
+# Join on integer index
+df_joined = pd.merge(df_reset, macd_reset, on="Date", how="left")
+
+# Restore datetime index
+df_joined.set_index("Date", inplace=True)
+
+# Replace df with joined version
+df = df_joined
 
 # --- Display
 st.title(f"{ticker} — Technical Indicators")
@@ -79,4 +87,5 @@ st.line_chart(df[["Close", "SMA20", "EMA50"]])
 st.line_chart(df[["RSI14"]])
 st.line_chart(df[["MACD", "MACD_signal"]])
 st.write(df.tail(10))
+
 
