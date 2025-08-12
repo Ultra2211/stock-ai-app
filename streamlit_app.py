@@ -5,7 +5,7 @@ import yfinance as yf
 
 st.set_page_config(page_title="Market Indicators App", layout="wide")
 
-# --- Sidebar
+# --- Sidebar inputs
 ticker = st.sidebar.text_input("Ticker", "AAPL").upper()
 period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
 interval = st.sidebar.selectbox("Interval", ["1d", "1h", "30m"], index=0)
@@ -20,6 +20,20 @@ df = load_data(ticker, period, interval)
 
 if df.empty:
     st.error("No data found.")
+    st.stop()
+
+# Flatten columns if MultiIndex
+if isinstance(df.columns, pd.MultiIndex):
+    df.columns = ['_'.join([str(c) for c in col if c]) for col in df.columns]
+
+# Detect close column
+close_col = None
+if f"Close_{ticker}" in df.columns:
+    close_col = f"Close_{ticker}"
+elif "Close" in df.columns:
+    close_col = "Close"
+else:
+    st.error(f"Close price column not found for ticker {ticker}")
     st.stop()
 
 def sma(series, length):
@@ -39,53 +53,26 @@ def rsi(series, length):
     return rsi
 
 def macd(series, fast=12, slow=26, signal=9):
-    if isinstance(series, pd.DataFrame):
-        series = series.iloc[:, 0]
-    elif isinstance(series, np.ndarray) and series.ndim > 1:
-        series = series.flatten()
     series = pd.Series(series)
-
-    if len(series) < slow:
-        raise ValueError(f"Input series length must be at least {slow} for MACD calculation")
-
     ema_fast = ema(series, fast)
     ema_slow = ema(series, slow)
     macd_line = ema_fast - ema_slow
     signal_line = ema(macd_line, signal)
     histogram = macd_line - signal_line
-
     return pd.DataFrame({
         "MACD": macd_line,
         "MACD_signal": signal_line,
         "MACD_hist": histogram
     }, index=series.index)
 
-# Calculate indicators
-# Flatten columns in df if MultiIndex exists
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = ['_'.join(filter(None, map(str, col))).strip() for col in df.columns.values]
+# Calculate indicators using detected close_col
+df["SMA20"] = sma(df[close_col], 20)
+df["EMA50"] = ema(df[close_col], 50)
+df["RSI14"] = rsi(df[close_col], 14)
+macd_df = macd(df[close_col])
 
-df["SMA20"] = sma(df["Close"], 20)
-df["EMA50"] = ema(df["Close"], 50)
-df["RSI14"] = rsi(df["Close"], 14)
-macd_df = macd(df["Close"])
-
-df_reset = df.reset_index()
-macd_reset = macd_df.reset_index()
-
-df_joined = pd.merge(df_reset, macd_reset, on="Date", how="left")
-df_joined.set_index("Date", inplace=True)
-df = df_joined
-
-# Detect which Close column to use
-close_col = None
-if f"Close_{ticker}" in df.columns:
-    close_col = f"Close_{ticker}"
-elif "Close" in df.columns:
-    close_col = "Close"
-else:
-    st.error(f"Close price column not found for ticker {ticker}")
-    st.stop()
+# Merge macd_df into df on index (Date)
+df = df.join(macd_df)
 
 # --- Display
 st.title(f"{ticker} — Technical Indicators")
@@ -95,7 +82,3 @@ st.line_chart(df[["RSI14"]])
 st.line_chart(df[["MACD", "MACD_signal"]])
 
 st.write(df.tail(10))
-
-
-
-
