@@ -49,4 +49,47 @@ def macd(series, fast=12, slow=26, signal=9):
         raise ValueError(f"Input series length must be at least {slow} for MACD calculation")
 
     ema_fast = ema(series, fast)
+    ema_slow = ema(series, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = ema(macd_line, signal)
+    histogram = macd_line - signal_line
+
+    return pd.DataFrame({
+        "MACD": macd_line,
+        "MACD_signal": signal_line,
+        "MACD_hist": histogram
+    }, index=series.index)
+
+# Calculate indicators
+df["SMA20"] = sma(df["Close"], 20)
+df["EMA50"] = ema(df["Close"], 50)
+df["RSI14"] = rsi(df["Close"], 14)
+macd_df = macd(df["Close"])
+
+# Flatten columns in df if MultiIndex exists
+if isinstance(df.columns, pd.MultiIndex):
+    df.columns = ['_'.join(filter(None, map(str, col))).strip() for col in df.columns.values]
+
+# Reset index to columns
+df_reset = df.reset_index()
+macd_reset = macd_df.reset_index()
+
+# DEBUG: Check columns after flattening
+st.write("df_reset columns:", df_reset.columns.tolist())
+st.write("macd_reset columns:", macd_reset.columns.tolist())
+
+# Merge on 'Date' (now both flat columns)
+df_joined = pd.merge(df_reset, macd_reset, on="Date", how="left")
+
+# Restore index as Date
+df_joined.set_index("Date", inplace=True)
+df = df_joined
+
+# --- Display
+st.title(f"{ticker} — Technical Indicators")
+st.line_chart(df[["Close", "SMA20", "EMA50"]])
+st.line_chart(df[["RSI14"]])
+st.line_chart(df[["MACD", "MACD_signal"]])
+st.write(df.tail(10))
+
 
