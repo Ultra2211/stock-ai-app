@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import yfinance as yf
-import pandas_ta as ta
 
 st.set_page_config(page_title="Market Indicators App", layout="wide")
 
@@ -22,15 +22,45 @@ if df.empty:
     st.error("No data found.")
     st.stop()
 
-# --- Indicators
-df["SMA20"] = ta.sma(df["Close"], length=20)
-df["EMA50"] = ta.ema(df["Close"], length=50)
-df["RSI14"] = ta.rsi(df["Close"], length=14)
-macd = ta.macd(df["Close"])
-df["MACD"] = macd["MACD_12_26_9"]
-df["MACD_signal"] = macd["MACDs_12_26_9"]
+# --- Indicators -- manual implementations
+
+def sma(series, length):
+    return series.rolling(window=length).mean()
+
+def ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
+
+def rsi(series, length):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=length).mean()
+    avg_loss = loss.rolling(window=length).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def macd(series, fast=12, slow=26, signal=9):
+    ema_fast = ema(series, fast)
+    ema_slow = ema(series, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = ema(macd_line, signal)
+    histogram = macd_line - signal_line
+    return pd.DataFrame({
+        "MACD": macd_line,
+        "MACD_signal": signal_line,
+        "MACD_hist": histogram
+    })
+
+df["SMA20"] = sma(df["Close"], 20)
+df["EMA50"] = ema(df["Close"], 50)
+df["RSI14"] = rsi(df["Close"], 14)
+macd_df = macd(df["Close"])
+df = df.join(macd_df)
 
 # --- Display
 st.title(f"{ticker} — Technical Indicators")
 st.line_chart(df[["Close", "SMA20", "EMA50"]])
+st.line_chart(df[["RSI14"]])
+st.line_chart(df[["MACD", "MACD_signal"]])
 st.write(df.tail(10))
