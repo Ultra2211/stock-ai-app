@@ -25,20 +25,28 @@ st.title("📈 S&P 500 — 10% Target Screener")
 st.caption("Screens S&P 500 for top 10 setups using RSI, MACD, EMA trend, ATR, and a historical hit-rate for your target. Not financial advice.")
 
 # -----------------------------
-# Utilities
+# Helpers
 # -----------------------------
+def safe_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return np.nan
+
+def fmt(x, digits=1, default="—"):
+    try:
+        if pd.isna(x):
+            return default
+        return f"{float(x):.{digits}f}"
+    except Exception:
+        return default
+
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def get_sp500_tickers():
-    """
-    yfinance provides a helper for S&P500 tickers. Fallback to a small core set if needed.
-    """
     try:
         tickers = yf.tickers_sp500()
-        # Some symbols include dots (e.g. BRK.B). yfinance expects '-' instead of '.' sometimes.
-        # We'll keep original and also try replacing '.' with '-'.
         return sorted(list(set(tickers)))
     except Exception:
-        # Fallback mini-universe to keep app functional
         return sorted([
             "AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM",
             "V","UNH","XOM","JNJ","PG","LLY","HD","MA","COST","BAC"
@@ -74,11 +82,6 @@ def atr(df: pd.DataFrame, period: int = 14):
     return tr.rolling(period).mean()
 
 def label_for_tradingview(symbol: str) -> str:
-    """
-    TradingView widgets can often resolve symbols without the exchange,
-    but we try a couple of fallbacks.
-    """
-    # If it's like BRK-B, also provide BRK.B as a variant
     return symbol.replace("-", ".")
 
 @st.cache_data(ttl=60 * 30, show_spinner=False)
@@ -105,24 +108,15 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def forward_hit_rate_for_target(df: pd.DataFrame, target_pct=0.10, horizon_days=10):
-    """
-    For each day t, check if within the next `horizon_days`, price reaches +target_pct vs close[t].
-    Simple approximation: compute max forward return over horizon and test if >= target_pct.
-    Returns: % of days (over last ~252 trading days) where this condition held.
-    """
     if df.empty or "Close" not in df:
         return np.nan, np.nan
-
     closes = df["Close"].values
     n = len(closes)
     if n < horizon_days + 2:
         return np.nan, np.nan
-
-    # Compute forward max over a rolling window
     forward_max = np.full(n, np.nan)
     for i in range(n - horizon_days):
         forward_max[i] = np.max(closes[i+1:i+1+horizon_days])
-
     base = closes[:-horizon_days]
     fmax = forward_max[:-horizon_days]
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -135,40 +129,24 @@ def forward_hit_rate_for_target(df: pd.DataFrame, target_pct=0.10, horizon_days=
     return (hit / total) * 100.0, total
 
 def composite_score(row, target_hit_rate_weight=0.6):
-    """
-    Score combines hit-rate and indicator alignment.
-    - Hit rate weight dominates (default 60%)
-    - Indicator score (40%): EMA trend, MACD>Signal, RSI in 45-65 sweet spot
-    """
     hr = row.get("HitRatePct", np.nan)
-    # Normalize hit-rate to 0-1 (cap 0..100)
     hr_norm = np.nan if math.isnan(hr) else max(0.0, min(100.0, hr)) / 100.0
-
-    # Indicator points: up to 1.0
     points = 0.0
     points += 0.4 if row.get("Close", 0) > row.get("EMA200", np.inf) else 0.0
     points += 0.3 if row.get("EMA50", -np.inf) > row.get("EMA200", np.inf) else 0.0
     points += 0.2 if row.get("MACD", -np.inf) > row.get("MACD_SIGNAL", np.inf) else 0.0
-
     rsi_val = row.get("RSI14", np.nan)
     if not math.isnan(rsi_val) and 45 <= rsi_val <= 65:
         points += 0.1
-
     ind_norm = min(points, 1.0)
-
     if hr_norm is np.nan:
         return np.nan
-
     score = target_hit_rate_weight * hr_norm + (1 - target_hit_rate_weight) * ind_norm
-    return round(100 * score, 2)  # scale to 0..100
+    return round(100 * score, 2)
 
 def tradingview_widget(symbol: str, height: int = 460):
-    """
-    Embeds TradingView Symbol Overview widget via an <iframe>-like component.
-    """
     tv_symbol = label_for_tradingview(symbol)
     widget = f"""
-    <!-- TradingView Widget BEGIN -->
     <div class="tradingview-widget-container">
       <div id="tradingview_symbol_overview"></div>
       <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-symbol-overview.js" async>
@@ -190,103 +168,99 @@ def tradingview_widget(symbol: str, height: int = 460):
       }}
       </script>
     </div>
-    <!-- TradingView Widget END -->
     """
     components.html(widget, height=height + 20, scrolling=False)
 
 # -----------------------------
-# Sidebar Controls
+# Sidebar
 # -----------------------------
 with st.sidebar:
     st.header("⚙️ Screener Settings")
-    default_universe = "S&P 500 (yfinance)"
-    universe_choice = st.selectbox("Universe", [default_universe])
-
-    target_pct_input = st.number_input("Target gain (%)", min_value=1.0, max_value=50.0, value=10.0, step=0.5)
-    horizon_days = st.number_input("Forward horizon (trading days)", min_value=3, max_value=60, value=10, step=1)
-    stop_pct_input = st.number_input("Stop suggestion (%)", min_value=1.0, max_value=30.0, value=5.0, step=0.5)
-
-    max_symbols = st.slider("Max symbols to scan (for speed)", min_value=50, max_value=505, value=300, step=25)
+    target_pct_input = st.number_input("Target gain (%)", 1.0, 50.0, 10.0, 0.5)
+    horizon_days = st.number_input("Forward horizon (trading days)", 3, 60, 10, 1)
+    stop_pct_input = st.number_input("Stop suggestion (%)", 1.0, 30.0, 5.0, 0.5)
+    max_symbols = st.slider("Max symbols to scan", 50, 505, 300, 25)
     data_period = st.selectbox("History period", ["1y","2y","5y"])
-    interval = "1d"
-
-    st.markdown("---")
-    manual_symbol = st.text_input("🔎 Manual ticker lookup", value="AAPL").strip().upper()
+    manual_symbol = st.text_input("🔎 Manual ticker lookup", "AAPL").strip().upper()
     run_button = st.button("🚀 Run Screener")
 
 # -----------------------------
-# Manual lookup section
+# Manual Lookup
 # -----------------------------
 st.subheader("🔎 Manual Lookup")
 if manual_symbol:
-    df_manual = get_history(manual_symbol, period=data_period, interval=interval)
+    df_manual = get_history(manual_symbol, period=data_period, interval="1d")
     if df_manual.empty:
-        st.warning(f"No data for {manual_symbol}. Try another symbol.")
+        st.warning(f"No data for {manual_symbol}")
     else:
         df_manual = compute_indicators(df_manual)
         hr_pct, samples = forward_hit_rate_for_target(df_manual, target_pct_input/100.0, horizon_days)
         latest = df_manual.iloc[-1]
-        price = float(latest["Close"])
-        atr_val = float(latest["ATR14"]) if not math.isnan(latest["ATR14"]) else np.nan
-        target_price = round(price * (1 + target_pct_input/100.0), 2)
-        stop_price = round(price * (1 - stop_pct_input/100.0), 2)
+        price = safe_float(latest.get("Close"))
+        atr_val = safe_float(latest.get("ATR14"))
+        target_price = price * (1 + target_pct_input/100.0)
+        stop_price = price * (1 - stop_pct_input/100.0)
 
         cols = st.columns([2, 1])
         with cols[0]:
             tradingview_widget(manual_symbol, height=440)
         with cols[1]:
             st.metric("Price", f"${price:,.2f}")
-            st.metric("RSI(14)", f"{latest['RSI14']:.1f}")
-            st.metric("MACD - Signal", f"{(latest['MACD']-latest['MACD_SIGNAL']):.3f}")
-            st.metric("EMA50 vs EMA200", "Bullish ✅" if latest["EMA50"] > latest["EMA200"] else "Bearish ❌")
-            st.metric("ATR(14)", f"{atr_val:.2f}" if not math.isnan(atr_val) else "—")
-            st.metric(f"Hit-rate {target_pct_input:.1f}% in {horizon_days}d", f"{hr_pct:.1f}% (n={int(samples)})" if not math.isnan(hr_pct) else "—")
-
+            st.metric("RSI(14)", fmt(latest.get("RSI14"), 1))
+            macd_diff = safe_float(latest.get("MACD")) - safe_float(latest.get("MACD_SIGNAL"))
+            st.metric("MACD - Signal", fmt(macd_diff, 3))
+            ema50 = safe_float(latest.get("EMA50"))
+            ema200 = safe_float(latest.get("EMA200"))
+            st.metric("EMA50 vs EMA200", "Bullish ✅" if ema50 > ema200 else "Bearish ❌")
+            st.metric("ATR(14)", fmt(atr_val, 2))
+            st.metric(f"Hit-rate {target_pct_input:.1f}% in {horizon_days}d", f"{fmt(hr_pct, 1)}% (n={int(samples)})" if not pd.isna(hr_pct) else "—")
             st.write("---")
             st.write("**Trade Ideas (simple):**")
-            st.write(f"- **Buy (now):** ~ ${price:,.2f}")
-            st.write(f"- **Target (+{target_pct_input:.1f}%):** ~ ${target_price:,.2f}")
-            st.write(f"- **Stop (−{stop_pct_input:.1f}%):** ~ ${stop_price:,.2f}")
+            st.write(f"- **Buy:** ~ ${price:,.2f}")
+            st.write(f"- **Target:** ~ ${target_price:,.2f}")
+            st.write(f"- **Stop:** ~ ${stop_price:,.2f}")
 
 # -----------------------------
-# Screener run
+# Screener Run
 # -----------------------------
 if run_button:
     st.subheader("🏆 Top 10 Candidates")
     tickers = get_sp500_tickers()
     if len(tickers) > max_symbols:
         tickers = tickers[:max_symbols]
-
     progress = st.progress(0, text="Downloading & analyzing…")
     rows = []
 
     for i, sym in enumerate(tickers, start=1):
         try:
-            df = get_history(sym, period=data_period, interval=interval)
+            df = get_history(sym, period=data_period, interval="1d")
             if df.empty:
                 continue
             df = compute_indicators(df)
-            if df.empty or len(df) < 60:
-                continue
             hr_pct, samples = forward_hit_rate_for_target(df, target_pct_input/100.0, horizon_days)
             if math.isnan(hr_pct):
                 continue
             latest = df.iloc[-1]
-
-            close = float(latest["Close"])
-            atr_val = float(latest["ATR14"]) if not math.isnan(latest["ATR14"]) else np.nan
+            close = safe_float(latest.get("Close"))
+            atr_val = safe_float(latest.get("ATR14"))
+            rsi14 = safe_float(latest.get("RSI14"))
+            macd_val = safe_float(latest.get("MACD"))
+            macd_sig = safe_float(latest.get("MACD_SIGNAL"))
+            ema50 = safe_float(latest.get("EMA50"))
+            ema200 = safe_float(latest.get("EMA200"))
+            if pd.isna(close):
+                continue
             target_price = close * (1 + target_pct_input / 100.0)
-            stop_price = close * (1 - stop_pct_input / 100.0)
+            stop_price   = close * (1 - stop_pct_input / 100.0)
             rr = (target_price - close) / max(close - stop_price, 1e-6)
-
             row = {
                 "Symbol": sym,
                 "Close": close,
-                "RSI14": float(latest["RSI14"]),
-                "MACD": float(latest["MACD"]),
-                "MACD_SIGNAL": float(latest["MACD_SIGNAL"]),
-                "EMA50": float(latest["EMA50"]),
-                "EMA200": float(latest["EMA200"]),
+                "RSI14": rsi14,
+                "MACD": macd_val,
+                "MACD_SIGNAL": macd_sig,
+                "EMA50": ema50,
+                "EMA200": ema200,
                 "ATR14": atr_val,
                 "HitRatePct": hr_pct,
                 "Samples": int(samples),
@@ -297,56 +271,38 @@ if run_button:
             row["Score"] = composite_score(row)
             rows.append(row)
         except Exception:
-            # Ignore single-symbol failures
             pass
-
-        # Update progress
         progress.progress(min(i/len(tickers), 1.0))
-
     progress.empty()
 
     if not rows:
-        st.error("No candidates found (insufficient data or errors). Try expanding the universe or adjusting settings.")
+        st.error("No candidates found.")
     else:
-        df_all = pd.DataFrame(rows)
-        df_all = df_all.dropna(subset=["Score"]).sort_values("Score", ascending=False)
+        df_all = pd.DataFrame(rows).dropna(subset=["Score"]).sort_values("Score", ascending=False)
         top10 = df_all.head(10).reset_index(drop=True)
-
-        # Display table
-        display_cols = [
-            "Symbol","Score","HitRatePct","Samples","Close",
-            "TargetPrice","StopPrice","RR","RSI14","EMA50","EMA200","ATR14"
-        ]
-        st.dataframe(top10[display_cols], use_container_width=True)
-
-        # Download
+        st.dataframe(top10, use_container_width=True)
         csv = top10.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Download Top 10 (CSV)", data=csv, file_name="sp500_top10.csv", mime="text/csv")
-
+        st.download_button("⬇️ Download Top 10 (CSV)", csv, "sp500_top10.csv", "text/csv")
         st.write("---")
-        st.subheader("📊 Charts & Indicators (Top 10)")
         for _, r in top10.iterrows():
-            st.markdown(f"### {r['Symbol']} &nbsp;|&nbsp; Score **{r['Score']:.1f}** &nbsp;|&nbsp; Hit-rate **{r['HitRatePct']:.1f}%** (n={int(r['Samples'])})")
+            st.markdown(f"### {r['Symbol']} | Score {fmt(r['Score'],1)} | Hit-rate {fmt(r['HitRatePct'],1)}% (n={int(r['Samples'])})")
             cols = st.columns([2, 1])
             with cols[0]:
                 tradingview_widget(r["Symbol"], height=420)
             with cols[1]:
                 st.metric("Price", f"${r['Close']:,.2f}")
-                st.metric("RSI(14)", f"{r['RSI14']:.1f}")
-                st.metric("EMA50>EMA200", "Yes ✅" if r["EMA50"] > r["EMA200"] else "No ❌")
-                st.metric("MACD-Signal", f"{(r['MACD']-r['MACD_SIGNAL']):.3f}")
-                st.metric("ATR(14)", f"{r['ATR14']:.2f}" if not math.isnan(r['ATR14']) else "—")
-
-                st.write("**Trade Ideas (simple):**")
-                st.write(f"- **Buy (now):** ~ ${r['Close']:,.2f}")
-                st.write(f"- **Target (+{target_pct_input:.1f}%):** ~ ${r['TargetPrice']:,.2f}")
-                st.write(f"- **Stop (−{stop_pct_input:.1f}%):** ~ ${r['StopPrice']:,.2f}")
+                st.metric("RSI(14)", fmt(r["RSI14"], 1))
+                st.metric("EMA50>EMA200", "Yes ✅" if safe_float(r["EMA50"]) > safe_float(r["EMA200"]) else "No ❌")
+                st.metric("MACD-Signal", fmt(safe_float(r["MACD"]) - safe_float(r["MACD_SIGNAL"]), 3))
+                st.metric("ATR(14)", fmt(r["ATR14"], 2))
+                st.write("**Trade Ideas:**")
+                st.write(f"- Buy: ~ ${r['Close']:,.2f}")
+                st.write(f"- Target: ~ ${r['TargetPrice']:,.2f}")
+                st.write(f"- Stop: ~ ${r['StopPrice']:,.2f}")
             st.write("---")
 
-# -----------------------------
-# Footer
-# -----------------------------
-st.caption("Data source: Yahoo Finance (via yfinance). TradingView widget © TradingView.")
+st.caption("Data source: Yahoo Finance. TradingView widget © TradingView.")
+
 
 
 
