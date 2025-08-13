@@ -2,13 +2,11 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests
-from datetime import datetime
 
 # ----------------------
 # CONFIG
 # ----------------------
-st.set_page_config(page_title="S&P 500 Scanner", layout="wide")
+st.set_page_config(page_title="S&P 500 AI Scanner", layout="wide")
 
 TIMEFRAMES = {
     "1 minute": ("1m", "1d"),
@@ -28,11 +26,13 @@ TIMEFRAMES = {
 # ----------------------
 @st.cache_data
 def get_sp500_symbols():
+    """Get S&P 500 stock symbols from Wikipedia."""
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     df = pd.read_html(url)[0]
     return df['Symbol'].tolist()
 
 def get_indicators(df):
+    """Calculate SMA, EMA, MACD, RSI."""
     df['SMA50'] = df['Close'].rolling(50).mean()
     df['EMA12'] = df['Close'].ewm(span=12, adjust=False).mean()
     df['EMA26'] = df['Close'].ewm(span=26, adjust=False).mean()
@@ -49,6 +49,7 @@ def get_indicators(df):
     return df
 
 def score_stock(df):
+    """Score stock based on indicators."""
     latest = df.iloc[-1]
     score = 0
     if latest['RSI14'] < 40: score += 1
@@ -59,9 +60,8 @@ def score_stock(df):
 # ----------------------
 # APP UI
 # ----------------------
-st.title("📈 S&P 500 AI Stock Scanner")
+st.title("📈 S&P 500 AI Stock Scanner with Targets")
 
-# Timeframe selection
 tf_label = st.selectbox("Select Timeframe", list(TIMEFRAMES.keys()), index=1)
 interval, period = TIMEFRAMES[tf_label]
 
@@ -79,14 +79,20 @@ if st.button("🚀 Run S&P 500 SCAN"):
                 continue
             data = get_indicators(data)
             score, latest = score_stock(data)
+            buy_price = latest["Close"]
+            target_price = buy_price * 1.10  # +10% target
+            stop_loss = buy_price * 0.95     # -5% stop loss
+
             candidates.append({
                 "Symbol": symbol,
                 "Score": score,
                 "RSI14": latest["RSI14"],
                 "MACD_Hist": latest["MACD_Hist"],
                 "SMA50": latest["SMA50"],
-                "Close": latest["Close"],
-                "Buy/Sell": "BUY" if score >= 2 else "SELL"
+                "Close": buy_price,
+                "Buy/Sell": "BUY" if score >= 2 else "SELL",
+                "Target Price": target_price,
+                "Stop Loss": stop_loss
             })
         except Exception:
             continue
@@ -106,13 +112,13 @@ if st.button("🚀 Run S&P 500 SCAN"):
             st.metric("Price", f"${row['Close']:.2f}")
             st.metric("RSI(14)", f"{row['RSI14']:.1f}")
             st.metric("MACD Hist", f"{row['MACD_Hist']:.3f}")
+            st.metric("Target Price", f"${row['Target Price']:.2f}")
+            st.metric("Stop Loss", f"${row['Stop Loss']:.2f}")
             st.markdown(
                 f'<iframe src="https://s.tradingview.com/widgetembed/?symbol={row["Symbol"]}&interval={interval}&hidesidetoolbar=1&symboledit=1&saveimage=0&toolbarbg=f1f3f6&studies=[]&theme=light&style=1&timezone=Etc/UTC&studies_overrides={{}}" '
                 'width="100%" height="500" frameborder="0"></iframe>',
                 unsafe_allow_html=True
             )
-
-
 
 
 
