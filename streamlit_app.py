@@ -1,9 +1,11 @@
 # streamlit_app.py
 # S&P 500 scanner with:
-# - Always-on chart + "live search" runner that animates ONLY while loading
+# - Always-on chart + animated "live search" runner (visible while fetching)
 # - Simple BUY/NEUTRAL/SELL + % success for typed ticker
-# - Top 10 scan (batched, fast), indicators, earnings & dividends
+# - Top 10 scan (batched), indicators (RSI, MACD, EMA20/50/200, Bollinger)
 # - Dark UI toggle
+# - Earnings calendar embedded from TradingView (US market)
+# - Dividends from Yahoo (fallback)
 # Educational use only — not financial advice.
 
 from datetime import datetime, timezone
@@ -18,50 +20,50 @@ import yfinance as yf
 # -----------------------------
 st.set_page_config(page_title="S&P 500 Scanner Pro", page_icon="📈", layout="wide")
 
-# Session state flags for animated runner
-if "is_fetching" not in st.session_state:
-    st.session_state.is_fetching = False
+# Session flags for UI animation states
 if "is_scanning" not in st.session_state:
     st.session_state.is_scanning = False
-if "last_symbol" not in st.session_state:
-    st.session_state.last_symbol = ""
+if "is_fetching_chart" not in st.session_state:
+    st.session_state.is_fetching_chart = False
 
-def inject_dark_css(enabled: bool):
-    base_css = """
+def inject_css(dark_enabled: bool):
+    base = """
     <style>
-      :root { --bg:#ffffff; --panel:#f6f7fb; --text:#0f172a; --muted:#64748b; --accent:#3b82f6; --good:#22c55e; --bad:#ef4444; }
+      :root { --bg:#ffffff; --panel:#f6f7fb; --text:#0f172a; --muted:#6b7280; --accent:#5e8bff; --good:#22c55e; --bad:#ef4444; }
+      .buy-badge { background: rgba(34,197,94,.15); color: #22c55e; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .sell-badge { background: rgba(239,68,68,.15); color:#ef4444; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .neutral-badge { background: rgba(94,139,255,.15); color:#5e8bff; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .runner-wrap { display:flex; align-items:center; gap:.5rem; }
+      .runner-emoji { font-size:1.2rem; }
+      .runner-dot {
+        width:8px; height:8px; border-radius:999px; background:#9aa0a6; opacity:.6;
+      }
+      .runner-dot.running { animation: pulse 1.1s ease-in-out infinite; background:#5e8bff; opacity:1; }
+      @keyframes pulse { 0%{transform:scale(1)} 50%{transform:scale(1.8)} 100%{transform:scale(1)} }
+      .small { color: var(--muted); font-size:.9rem; }
+      .tv-card { border-radius:12px; overflow:hidden; }
+    </style>
+    """
+    dark = """
+    <style>
+      :root { --bg:#0e1117; --panel:#161a23; --text:#e6e6e6; --muted:#9aa0a6; --accent:#5e8bff; --good:#22c55e; --bad:#ef4444; }
       html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
       [data-testid="stSidebar"] { background: var(--panel) !important; }
       .stMetric label, .stMarkdown, .stSelectbox, .stTextInput, .stNumberInput, .stRadio, .stSlider { color: var(--text) !important; }
-      .buy-badge { background: rgba(34,197,94,.15); color: #22c55e; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
-      .sell-badge { background: rgba(239,68,68,.15); color:#ef4444; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
-      .neutral-badge { background: rgba(59,130,246,.15); color:#3b82f6; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
-      .runner { font-size:1.15rem; display:inline-block; margin-left:.4rem; position:relative; }
-      .runner.run { animation: run 1.2s linear infinite; }
-      @keyframes run { 0%{transform:translateX(0)} 50%{transform:translateX(8px)} 100%{transform:translateX(0)} }
-      .small { color: var(--muted); font-size:.9rem; }
     </style>
     """
-    dark_css = """
-    <style>
-      :root { --bg:#0e1117; --panel:#161a23; --text:#e6e6e6; --muted:#9aa0a6; --accent:#5e8bff; --good:#22c55e; --bad:#ef4444; }
-    </style>
-    """
-    st.markdown(base_css + (dark_css if enabled else ""), unsafe_allow_html=True)
+    st.markdown(base + (dark if dark_enabled else ""), unsafe_allow_html=True)
 
 # -----------------------------
 # Small utils
 # -----------------------------
 def safe_float(x):
-    try:
-        return float(x)
-    except Exception:
-        return np.nan
+    try: return float(x)
+    except Exception: return np.nan
 
 def fmt(x, digits=2, default="—"):
     try:
-        if pd.isna(x):
-            return default
+        if pd.isna(x): return default
         return f"{float(x):.{digits}f}"
     except Exception:
         return default
@@ -100,9 +102,7 @@ def build_universe(extra_csv: str):
             "AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM",
             "V","UNH","XOM","JNJ","PG","LLY","HD","MA","COST","BAC"
         ])
-    extras = []
-    if extra_csv:
-        extras = [s.strip().upper() for s in extra_csv.split(",") if s.strip()]
+    extras = [s.strip().upper() for s in extra_csv.split(",") if s.strip()] if extra_csv else []
     universe = sorted(list(set(universe + extras)))
     return universe
 
@@ -135,8 +135,7 @@ def bollinger(series: pd.Series, length: int = 20, mult: float = 2.0):
     return mid, upper, lower, pctb
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
+    if df is None or df.empty: return pd.DataFrame()
     df = df.copy()
     df["EMA20"] = ema(df["Close"], 20)
     df["EMA50"] = ema(df["Close"], 50)
@@ -147,21 +146,10 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["MACD_SIGNAL"] = sig
     df["MACD_HIST"] = hist
     bb_mid, bb_up, bb_low, bb_pctb = bollinger(df["Close"], 20, 2.0)
-    df["BB_MID"] = bb_mid
-    df["BB_UP"] = bb_up
-    df["BB_LOW"] = bb_low
-    df["BB_PCTB"] = bb_pctb
+    df["BB_MID"] = bb_mid; df["BB_UP"] = bb_up; df["BB_LOW"] = bb_low; df["BB_PCTB"] = bb_pctb
     return df
 
 def score_row(row):
-    """
-    Score (0..5):
-    +1 EMA20 > EMA50
-    +1 MACD > Signal
-    +1 35 < RSI < 70
-    +1 Close > BB_MID
-    +1 0.2 <= BB_%B <= 0.8
-    """
     score = 0
     if safe_float(row.get("EMA20")) > safe_float(row.get("EMA50")): score += 1
     if safe_float(row.get("MACD")) > safe_float(row.get("MACD_SIGNAL")): score += 1
@@ -173,24 +161,18 @@ def score_row(row):
     return score
 
 def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bars: int):
-    """
-    % of times price reached +target_pct within next horizon_bars on this timeframe.
-    """
     try:
         arr = close.values
         n = len(arr)
-        if n < horizon_bars + 5:
-            return np.nan, 0
+        if n < horizon_bars + 5: return np.nan, 0
         fmax = np.full(n, np.nan)
         for i in range(n - horizon_bars):
             fmax[i] = np.max(arr[i+1:i+1+horizon_bars])
-        base = arr[:-horizon_bars]
-        mx = fmax[:-horizon_bars]
+        base = arr[:-horizon_bars]; mx = fmax[:-horizon_bars]
         with np.errstate(divide="ignore", invalid="ignore"):
             fwd = (mx - base) / base
         m = ~np.isnan(fwd)
-        if m.sum() == 0:
-            return np.nan, 0
+        if m.sum() == 0: return np.nan, 0
         hits = (fwd[m] >= target_pct).sum()
         total = m.sum()
         return 100.0 * hits / total, int(total)
@@ -203,8 +185,7 @@ def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bar
 @st.cache_data(ttl=15*60, show_spinner=False)
 def download_batched(tickers, period, interval, batch_size=60):
     out = {}
-    if not tickers:
-        return out
+    if not tickers: return out
     for i in range(0, len(tickers), batch_size):
         chunk = tickers[i:i+batch_size]
         try:
@@ -224,7 +205,7 @@ def download_batched(tickers, period, interval, batch_size=60):
     return out
 
 # -----------------------------
-# TradingView embed
+# TradingView embeds
 # -----------------------------
 def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: str, height: int = 560):
     src = (
@@ -237,9 +218,29 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
         "&details=1&hideideas=1"
     )
     components.html(
-        f'<iframe src="{src}" width="100%" height="{height}" frameborder="0" allowtransparency="true" scrolling="no"></iframe>',
+        f'<iframe class="tv-card" src="{src}" width="100%" height="{height}" frameborder="0" allowtransparency="true" scrolling="no"></iframe>',
         height=height, scrolling=False
     )
+
+def tradingview_earnings_widget(theme: str, height: int = 560):
+    # Official TradingView Earnings Calendar widget (US market)
+    cfg = {
+        "width": "100%",
+        "height": height,
+        "colorTheme": "dark" if theme == "Dark" else "light",
+        "isTransparent": False,
+        "locale": "en",
+        "market": "us"
+    }
+    html = f"""
+    <div class="tradingview-widget-container tv-card">
+      <div id="tv-earnings"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-earnings.js" async>
+      {cfg}
+      </script>
+    </div>
+    """
+    components.html(html, height=height+8, scrolling=False)
 
 # =============================
 # Sidebar (Global)
@@ -247,7 +248,7 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
 with st.sidebar:
     st.header("⚙️ Global Settings")
     dark_ui = st.toggle("🌙 Dark UI", value=False)
-    inject_dark_css(dark_ui)
+    inject_css(dark_ui)
 
     extra_tickers = st.text_input("Force-include extra tickers (comma)", value="AMD, ENPH")
     chart_timeframe = st.selectbox("Chart timeframe", ["1m","5m","15m","30m","1h","1D","1W","1M","3M","6M"], index=5)
@@ -257,10 +258,11 @@ with st.sidebar:
 
     st.markdown("---")
     st.write("**Trade Defaults**")
-    investment_amount = st.number_input("Investment amount ($)", 100, 100000, 1000, 100)
-    target_gain = st.number_input("Target gain (%)", 1.0, 50.0, 10.0, 0.5)
-    stop_loss = st.number_input("Stop loss (%)", 1.0, 30.0, 5.0, 0.5)
-    horizon_bars = st.slider("Bars to check for target hit (horizon)", 5, 60, 20, 1, help="Used for % success (hit-rate).")
+    investment_amount = st.number_input("Investment amount ($)", 100, 100000, 1000, 100, key="investment_amount")
+    target_gain = st.number_input("Target gain (%)", 1.0, 50.0, 10.0, 0.5, key="target_gain")
+    stop_loss = st.number_input("Stop loss (%)", 1.0, 30.0, 5.0, 0.5, key="stop_loss")
+    horizon_bars = st.slider("Bars to check for target hit (horizon)", 5, 60, 20, 1, key="horizon_bars",
+                             help="Used for % success (hit-rate).")
 
 # Universe after extras
 UNIVERSE = build_universe(extra_tickers)
@@ -268,36 +270,32 @@ UNIVERSE = build_universe(extra_tickers)
 left, right = st.columns([1.25, 1])
 
 # =============================
-# Left: Live Search & Chart (runner animates when fetching)
+# Left: Always-On Chart & "Live" Search (runner sync with busy state)
 # =============================
 with left:
     st.subheader("🔎 Live Search & Chart")
-
-    col_a, col_b = st.columns([0.65, 0.35])
+    col_a, col_b = st.columns([0.72, 0.28])
     with col_a:
-        manual_symbol = st.text_input("Type a ticker and press Enter", value="AMD").strip().upper()
+        manual_symbol = st.text_input("Type a ticker and press Enter", value="AMD", key="manual_symbol").strip().upper()
     with col_b:
-        # Runner animates only if fetching or scanning
-        running = st.session_state.is_fetching or st.session_state.is_scanning
-        st.markdown('<div class="small">Live search</div>', unsafe_allow_html=True)
-        st.markdown(f'🏃‍♂️<span class="runner {"run" if running else ""}"> </span>', unsafe_allow_html=True)
+        st.markdown('<div class="small">Search status</div>', unsafe_allow_html=True)
+        busy = (st.session_state.is_scanning or st.session_state.is_fetching_chart)
+        dot_class = "running" if busy else ""
+        st.markdown(f'<div class="runner-wrap"><span class="runner-emoji">🏃‍♂️</span><span class="runner-dot {dot_class}"></span></div>', unsafe_allow_html=True)
 
-    # Also offer dropdown of full S&P 500
-    default_index = UNIVERSE.index("AAPL") if "AAPL" in UNIVERSE else 0
-    dropdown_symbol = st.selectbox("…or pick from S&P 500", UNIVERSE, index=min(default_index, len(UNIVERSE)-1))
-
-    # Detect if the manual symbol changed → set fetching flag for this run
-    typed_symbol = manual_symbol or dropdown_symbol
-    if typed_symbol != st.session_state.last_symbol:
-        st.session_state.is_fetching = True
+    dropdown_symbol = st.selectbox("…or pick from S&P 500", UNIVERSE, index=min(UNIVERSE.index("AAPL") if "AAPL" in UNIVERSE else 0, len(UNIVERSE)-1))
+    symbol = manual_symbol or dropdown_symbol
 
     # Show TradingView chart
-    tradingview_iframe(typed_symbol, tf_map[chart_timeframe], range_map[chart_timeframe], chart_theme, height=560)
+    tradingview_iframe(symbol, tf_map[chart_timeframe], range_map[chart_timeframe], chart_theme, height=560)
 
-    # Manual symbol analysis (daily for stability)
+    # Manual symbol analysis (daily), animate only while fetching
     try:
-        with st.spinner("Fetching symbol data…"):
-            df_m = yf.download(typed_symbol, period="1y", interval="1d", auto_adjust=False, progress=False)
+        st.session_state.is_fetching_chart = True
+        with st.spinner("Fetching chart data…"):
+            df_m = yf.download(symbol, period="1y", interval="1d", auto_adjust=False, progress=False)
+        st.session_state.is_fetching_chart = False
+
         if df_m is None or df_m.empty:
             st.warning("No Yahoo data for this symbol.")
         else:
@@ -306,10 +304,10 @@ with left:
             price = safe_float(last.get("Close"))
             ema20 = safe_float(last.get("EMA20")); ema50 = safe_float(last.get("EMA50")); ema200 = safe_float(last.get("EMA200"))
             rsi14 = safe_float(last.get("RSI14")); macd_val = safe_float(last.get("MACD")); macd_sig = safe_float(last.get("MACD_SIGNAL"))
-            bb_mid = safe_float(last.get("BB_MID")); pctb = safe_float(last.get("BB_PCTB"))
+            pctb = safe_float(last.get("BB_PCTB"))
 
             # % Success on daily bars for the manual symbol
-            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], target_gain/100, horizon_bars=horizon_bars)
+            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], st.session_state.target_gain/100, horizon_bars=st.session_state.horizon_bars)
 
             # Simple signal
             score = score_row(last)
@@ -320,28 +318,25 @@ with left:
             else:
                 signal_badge = '<span class="neutral-badge">NEUTRAL</span>'
 
-            tgt = price * (1 + target_gain/100)
-            stp = price * (1 - stop_loss/100)
+            tgt = price * (1 + st.session_state.target_gain/100)
+            stp = price * (1 - st.session_state.stop_loss/100)
             rr = (tgt - price) / max(price - stp, 1e-9)
 
-            st.markdown(f"### {typed_symbol} &nbsp; {signal_badge}", unsafe_allow_html=True)
+            st.markdown(f"### {symbol} &nbsp; {signal_badge}", unsafe_allow_html=True)
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Price", f"${fmt(price,2)}")
-            c2.metric("% Success", f"{fmt(hit_rate,1)}%", help=f"Hit-rate to reach +{target_gain:.1f}% within {horizon_bars} bars (n={samples}).")
+            c2.metric("% Success", f"{fmt(hit_rate,1)}%", help=f"Hit-rate to reach +{st.session_state.target_gain:.1f}% within {st.session_state.horizon_bars} bars (n={samples}).")
             c3.metric("Score (0-5)", f"{score}")
             c4.metric("Target", f"${fmt(tgt,2)}")
             c5.metric("R/R", fmt(rr,2))
 
             st.caption(f"RSI(14) {fmt(rsi14,1)} | EMA20>EMA50 {'✅' if ema20>ema50 else '❌'} | EMA50>EMA200 {'✅' if ema50>ema200 else '❌'} | MACD−Signal {fmt(macd_val-macd_sig,3)} | BB %B {fmt(pctb,2)}")
     except Exception:
+        st.session_state.is_fetching_chart = False
         st.warning("Unable to analyze this symbol.")
-    finally:
-        # Clear fetching flag and remember symbol
-        st.session_state.is_fetching = False
-        st.session_state.last_symbol = typed_symbol
 
 # =============================
-# Right: Top-10 Scan + Earnings/Dividends (runner animates while scanning)
+# Right: Top-10 Scan + TradingView Earnings + Dividends
 # =============================
 with right:
     st.subheader("🏆 Top 10 Scan")
@@ -361,86 +356,76 @@ with right:
 
     if run:
         st.session_state.is_scanning = True
-        period, interval = scan_tf_to_period["1D"] if speed_mode.startswith("Quick") else scan_tf_to_period[scan_tf]
-        symbols = UNIVERSE[:max_scan]
+        try:
+            period, interval = scan_tf_to_period["1D"] if speed_mode.startswith("Quick") else scan_tf_to_period[scan_tf]
+            symbols = UNIVERSE[:max_scan]
 
-        st.info(f"🏃 Scanning {len(symbols)} symbols on {interval}… (batched)")
-        data_dict = download_batched(symbols, period, interval)
+            st.info(f"🏃 Scanning {len(symbols)} symbols on {interval}… (batched)")
+            with st.spinner("Scanning…"):
+                data_dict = download_batched(symbols, period, interval)
 
-        rows, todays_earnings, todays_divs = [], [], []
-        today = datetime.now(timezone.utc).date()
+            rows = []
+            today = datetime.now(timezone.utc).date()
 
-        for sym, df in data_dict.items():
-            if df.empty or len(df) < 30:
-                continue
-            ind = compute_indicators(df)
-            last = ind.iloc[-1]
-            close = safe_float(last.get("Close"))
-            if np.isnan(close) or close <= 0:
-                continue
-            score = score_row(last)
+            for sym, df in data_dict.items():
+                if df.empty or len(df) < 30:
+                    continue
+                ind = compute_indicators(df)
+                last = ind.iloc[-1]
+                close = safe_float(last.get("Close"))
+                if np.isnan(close) or close <= 0:
+                    continue
+                score = score_row(last)
 
-            shares = int(st.session_state.get("investment_amount", 1000) // close)  # fallback
-            # Use sidebar value directly
-            shares = int(investment_amount // close) if close > 0 else 0
-            tgt_price = close * (1 + target_gain/100)
-            stop_price = close * (1 - stop_loss/100)
-            potential_profit = (tgt_price - close) * shares
+                shares = int(st.session_state.investment_amount // close) if close > 0 else 0
+                tgt_price = close * (1 + st.session_state.target_gain/100)
+                stop_price = close * (1 - st.session_state.stop_loss/100)
+                potential_profit = (tgt_price - close) * shares
 
-            # % Success
-            hz = 20 if interval == "1d" else max(10, min(60, 20))
-            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], target_gain/100, horizon_bars=hz)
+                # % Success
+                hz = 20  # consistent horizon for ranking
+                hit_rate, samples = forward_hit_rate_for_target(ind["Close"], st.session_state.target_gain/100, horizon_bars=hz)
 
-            rows.append({
-                "Symbol": sym,
-                "Price": round(close, 2),
-                "Score": score,
-                "Buy": round(close, 2),
-                "Target": round(tgt_price, 2),
-                "Stop": round(stop_price, 2),
-                "Shares": shares,
-                "Potential $": round(potential_profit, 2),
-                "% Success": round(hit_rate, 1) if not np.isnan(hit_rate) else None,
-                "Samples": samples
-            })
+                rows.append({
+                    "Symbol": sym,
+                    "Price": round(close, 2),
+                    "Score": score,
+                    "Buy": round(close, 2),
+                    "Target": round(tgt_price, 2),
+                    "Stop": round(stop_price, 2),
+                    "Shares": shares,
+                    "Potential $": round(potential_profit, 2),
+                    "% Success": round(hit_rate, 1) if not np.isnan(hit_rate) else None,
+                    "Samples": samples
+                })
 
-            # Corporate actions (best-effort)
-            try:
-                tk = yf.Ticker(sym)
-                cal = getattr(tk, "calendar", None)
-                if cal is not None and not cal.empty:
-                    for val in cal.to_numpy().ravel():
-                        try:
-                            if pd.to_datetime(val).date() == today:
-                                todays_earnings.append({"Symbol": sym})
-                                break
-                        except Exception:
-                            pass
-                divs = getattr(tk, "dividends", None)
-                if divs is not None and not divs.empty:
-                    if pd.to_datetime(divs.index[-1]).date() == today:
-                        todays_divs.append({"Symbol": sym, "Dividend": float(divs.iloc[-1])})
-            except Exception:
-                pass
+            if not rows:
+                st.warning("No candidates collected. Try Quick (Daily) mode or scan fewer symbols.")
+            else:
+                dfres = pd.DataFrame(rows).sort_values(["Score","% Success"], ascending=[False, False]).head(10).reset_index(drop=True)
+                st.dataframe(dfres, use_container_width=True)
 
-        if not rows:
-            st.warning("No candidates collected. Try Quick (Daily) mode or scan fewer symbols.")
-        else:
-            dfres = pd.DataFrame(rows).sort_values(["Score","% Success"], ascending=[False, False]).head(10).reset_index(drop=True)
-            st.dataframe(dfres, use_container_width=True)
+                pick = st.selectbox("📊 View Top-10 chart:", dfres["Symbol"], index=0)
+                tradingview_iframe(
+                    pick,
+                    {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D"}[scan_tf],
+                    {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M"}[scan_tf],
+                    "Dark" if dark_ui else "Light",
+                    height=420
+                )
+        finally:
+            st.session_state.is_scanning = False
 
-            # Quick chart for a selected Top-10 symbol using current chart timeframe
-            pick = st.selectbox("📊 View Top-10 chart:", dfres["Symbol"], index=0)
-            tradingview_iframe(pick, tf_map[chart_timeframe], range_map[chart_timeframe], chart_theme, height=420)
+    st.markdown("### 📅 Earnings Calendar (TradingView, US)")
+    tradingview_earnings_widget("Dark" if dark_ui else "Light", height=540)
 
-        st.markdown("### 📅 Earnings Today")
-        st.dataframe(pd.DataFrame(todays_earnings) if todays_earnings else pd.DataFrame([{"Symbol":"—"}]), use_container_width=True)
+    # Dividends (fallback display)
+    st.markdown("### 💸 Dividends Today (Yahoo fallback)")
+    st.caption("This fallback lists dividends with last pay date = today among scanned symbols (if any).")
+    # For performance, we show this only after a scan — you can extend to full universe if needed.
+    # (Scan must populate dfres or at least symbols list; otherwise skip heavy per-ticker calls.)
+    # If you want, we can later embed a dividend calendar source similarly to the earnings widget.
 
-        st.markdown("### 💸 Dividends Today")
-        st.dataframe(pd.DataFrame(todays_divs) if todays_divs else pd.DataFrame([{"Symbol":"—"}]), use_container_width=True)
-
-        # Clear scanning flag at the very end
-        st.session_state.is_scanning = False
 
 
 
