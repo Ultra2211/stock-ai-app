@@ -1,11 +1,9 @@
 # streamlit_app.py
-# Dark-mode-only S&P 500 scanner with:
-# - Always-on TradingView chart + ticker search (timeframe controlled on the chart)
+# Dark-mode-only S&P 500 scanner with robust dark styling for ALL dropdowns/menus.
+# - TradingView chart + ticker search (timeframe controlled on the chart)
 # - Expanded indicators: EMA20/50/200, RSI, MACD, Bollinger, Stochastic, ADX(+DI/−DI), MFI, ATR, Supertrend(10,3), OBV
-# - 10-point composite score + blended % Success (hit-rate & score)
-# - ATR-aware stop suggestion (in addition to your % stop)
-# - Top-10 scan (batched), blue-labeled timeframe selector (right panel), visible spinner text
-# - TradingView earnings calendar (US)
+# - 10-point score + blended % Success
+# - Top-10 scan (batched) + TradingView earnings calendar (US)
 # Educational use only — not financial advice.
 
 from datetime import datetime, timezone
@@ -23,8 +21,12 @@ st.set_page_config(page_title="S&P 500 Scanner Pro (Dark)", page_icon="📈", la
 def inject_dark_css():
     st.markdown("""
     <style>
-      :root { --bg:#0e1117; --panel:#161a23; --text:#ffffff; --muted:#c8c8c8; --blue:#2563eb; --blue-contrast:#ffffff;
-              --good:#22c55e; --bad:#ef4444; }
+      :root {
+        --bg:#0e1117; --panel:#161a23; --text:#ffffff; --muted:#c8c8c8;
+        --blue:#2563eb; --blue-soft:#1d4ed8; --blue-contrast:#ffffff;
+        --border:#2a2f3a; --input:#11141a; --menu:#0f1420; --menu-hover:#1d2330;
+        --good:#22c55e; --bad:#ef4444;
+      }
 
       html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
       [data-testid="stSidebar"] { background: var(--panel) !important; }
@@ -34,21 +36,33 @@ def inject_dark_css():
 
       /* Inputs */
       .stTextInput input, .stNumberInput input {
-        color: var(--text) !important; background: #11141a !important; border-color: #2a2f3a !important;
+        color: var(--text) !important; background: var(--input) !important; border-color: var(--border) !important;
       }
 
-      /* BaseWeb select (value container + arrow) */
+      /* ===== BaseWeb Select (Streamlit selectbox) – value container, parts, caret ===== */
       div[data-baseweb="select"] > div {
-        background:#11141a !important; border-color:#2a2f3a !important; color: var(--text) !important;
+        background: var(--input) !important;
+        border-color: var(--border) !important;
+        color: var(--text) !important;
       }
+      /* ensure all descendants (value text, placeholder, singleValue, input) are white */
       div[data-baseweb="select"] * { color: var(--text) !important; }
+      div[data-baseweb="select"] input { color: var(--text) !important; }
       div[data-baseweb="select"] svg { fill: var(--text) !important; }
 
-      /* Dropdown menu for select */
-      div[data-baseweb="menu"] { background:#0f1420 !important; border:1px solid #2a2f3a !important; }
-      div[data-baseweb="menu"] * { color:#ffffff !important; }
-      div[data-baseweb="option"] { background: transparent !important; }
-      div[data-baseweb="option"][aria-selected="true"] { background:#1d2330 !important; } /* dark highlight */
+      /* ===== Select MENU overlay ===== */
+      div[data-baseweb="menu"] {
+        background: var(--menu) !important;
+        border: 1px solid var(--border) !important;
+      }
+      /* text within menu (options, groups, etc.) */
+      div[data-baseweb="menu"] * { color: var(--text) !important; }
+      div[data-baseweb="option"] {
+        background: transparent !important;
+        color: var(--text) !important;
+      }
+      div[data-baseweb="option"]:hover { background: var(--menu-hover) !important; }
+      div[data-baseweb="option"][aria-selected="true"] { background: var(--menu-hover) !important; }
 
       /* Spinner visibility */
       div[data-testid="stSpinner"] *, div[role="alert"] * { color: var(--text) !important; }
@@ -56,7 +70,7 @@ def inject_dark_css():
       /* Compact metrics */
       div[data-testid="stMetric"] { padding:.25rem .5rem; }
       div[data-testid="stMetricValue"] { font-size:1.2rem; line-height:1.2rem; }
-      div[data-testid="stMetricLabel"] { font-size:.85rem; }
+      div[data-testid="stMetricLabel"] { font-size:.85rem; color: var(--muted) !important; }
 
       /* Badges */
       .buy-badge { background: rgba(34,197,94,.15); color:#22c55e; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
@@ -75,6 +89,9 @@ def inject_dark_css():
 
       /* Blue accent for ticker heading */
       .ticker-accent { color: var(--blue); font-weight:700; }
+
+      /* Blue label utility */
+      .blue-label { color: var(--blue) !important; font-weight:700; margin: 0 0 4px 0; }
 
       /* Tighter control spacing */
       .stTextInput, .stSelectbox, .stNumberInput, .stRadio, .stSlider { margin-bottom:.5rem; }
@@ -102,9 +119,9 @@ def tv_symbol(sym: str) -> str:
 
 # Default initial chart settings (users change inside TradingView toolbar)
 DEFAULT_INTERVAL = "D"   # daily
-DEFAULT_RANGE = "6M"     # 6 months (just an initial view)
+DEFAULT_RANGE = "6M"     # 6 months initial
 
-# For the Top‑10 mini chart (initial interval; user can still change inside the chart)
+# For Top‑10 mini chart (initial view)
 TF_MAP = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D"}
 RANGE_MAP = {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M"}
 
@@ -247,7 +264,6 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     df = df.copy()
 
-    # Core MAs and oscillators
     df["EMA20"] = ema(df["Close"], 20)
     df["EMA50"] = ema(df["Close"], 50)
     df["EMA200"] = ema(df["Close"], 200)
@@ -255,26 +271,20 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     macd_line, sig, hist = macd(df["Close"])
     df["MACD"] = macd_line; df["MACD_SIGNAL"] = sig; df["MACD_HIST"] = hist
 
-    # Bollinger
     bb_mid, bb_up, bb_low, bb_pctb = bollinger(df["Close"], 20, 2.0)
     df["BB_MID"] = bb_mid; df["BB_UP"] = bb_up; df["BB_LOW"] = bb_low; df["BB_PCTB"] = bb_pctb
 
-    # Stochastic
     k, d = stochastic(df["High"], df["Low"], df["Close"], 14, 3)
     df["STO_K"] = k; df["STO_D"] = d
 
-    # ADX / DI
     plus_di, minus_di, adx_v = adx(df, 14)
     df["PLUS_DI"] = plus_di; df["MINUS_DI"] = minus_di; df["ADX"] = adx_v
 
-    # MFI
     df["MFI14"] = mfi(df, 14)
 
-    # Supertrend + ATR
     st_u, st_l, st_up, atr_v = supertrend(df, 10, 3.0)
     df["ST_UPPER"] = st_u; df["ST_LOWER"] = st_l; df["ST_UPTREND"] = st_up; df["ATR14"] = atr_v
 
-    # OBV
     df["OBV"] = on_balance_volume(df)
     return df
 
@@ -282,19 +292,6 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # Scoring & success metrics
 # -----------------------------
 def score_row(row):
-    """
-    10-point composite:
-    1) EMA20 > EMA50
-    2) EMA50 > EMA200
-    3) MACD > Signal
-    4) 40 < RSI < 65
-    5) Close > BB_MID
-    6) 0.2 <= BB_%B <= 0.8
-    7) Stoch bullish: K > D and K < 80
-    8) ADX > 20 and +DI > -DI
-    9) 35 < MFI < 75
-    10) Supertrend uptrend
-    """
     s = 0
     c = safe_float(row.get("Close"))
     if safe_float(row.get("EMA20")) > safe_float(row.get("EMA50")): s += 1
@@ -313,7 +310,6 @@ def score_row(row):
     return s
 
 def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bars: int):
-    """% of times price reached +target_pct within next horizon_bars on this timeframe."""
     try:
         arr = close.values
         n = len(arr)
@@ -333,7 +329,6 @@ def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bar
         return np.nan, 0
 
 def blended_success_pct(hitrate_pct: float, score10: int) -> float:
-    """Blend historical hit-rate and indicator score (score/10*100) with 50/50 weight."""
     a = 0 if hitrate_pct is None or np.isnan(hitrate_pct) else float(hitrate_pct)
     b = max(0, min(10, int(score10))) * 10.0
     return (a + b) / 2.0
@@ -372,7 +367,7 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
         f"symbol={tv_symbol(symbol)}&interval={interval_code}&range={range_code}"
         "&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=1"
         "&toolbarbg=f1f3f6"
-        f"&theme={'dark'}"
+        f"&theme=dark"
         "&style=1&timezone=Etc/UTC&withdateranges=1&allow_symbol_change=1"
         "&details=1&hideideas=1"
     )
@@ -420,7 +415,7 @@ UNIVERSE = build_universe(extra_tickers)
 left, right = st.columns([1.25, 1])
 
 # =============================
-# Left: Always-On Chart & Search (no timeframe control here)
+# Left: Search & Chart (timeframe controlled on the chart)
 # =============================
 with left:
     st.subheader("🔎 Search & Chart")
@@ -428,8 +423,7 @@ with left:
     dropdown_symbol = st.selectbox("…or pick from S&P 500", UNIVERSE, index=min(UNIVERSE.index("AAPL") if "AAPL" in UNIVERSE else 0, len(UNIVERSE)-1))
     symbol = manual_symbol or dropdown_symbol
 
-    # Users change timeframe using the TradingView toolbar
-    tradingview_iframe(symbol, DEFAULT_INTERVAL, DEFAULT_RANGE, "Dark", height=520)
+    tradingview_iframe(symbol, "D", "6M", "Dark", height=520)
 
     # Manual symbol analysis (daily)
     try:
@@ -455,15 +449,14 @@ with left:
             else:
                 signal_badge = '<span class="neutral-badge">NEUTRAL</span>'
 
-            # Targets & stops (both % and ATR-based suggestion)
+            # Targets & stops
             tgt = price * (1 + st.session_state.target_gain/100)
             stp_pct_val = price * (1 - st.session_state.stop_loss/100)
             atr_val = safe_float(last.get("ATR14"))
             stp_atr = price - 1.5 * atr_val if not np.isnan(atr_val) else np.nan
-            stp_use = stp_pct_val  # keep user % stop as binding; ATR suggestion shown separately
+            stp_use = stp_pct_val
             rr = (tgt - price) / max(price - stp_use, 1e-9)
 
-            # Snippets
             ema20 = safe_float(last.get("EMA20")); ema50 = safe_float(last.get("EMA50")); ema200 = safe_float(last.get("EMA200"))
             rsi14 = safe_float(last.get("RSI14")); macd_spread = safe_float(last.get("MACD")) - safe_float(last.get("MACD_SIGNAL"))
             pctb = safe_float(last.get("BB_PCTB"))
@@ -495,8 +488,8 @@ with left:
 with right:
     st.subheader("🏆 Top 10 Scan")
 
-    # Blue label for timeframe selector: render our own label (blue), then hide the selectbox label
-    st.markdown("<div style='color:#2563eb; font-weight:700; margin-bottom:4px;'>Scan timeframe (Full mode only)</div>", unsafe_allow_html=True)
+    # Force a BLUE label above the timeframe select; collapse the default label to avoid duplicate
+    st.markdown("<div class='blue-label'>Scan timeframe (Full mode only)</div>", unsafe_allow_html=True)
     speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True, label_visibility="visible")
     scan_tf = st.selectbox("", ["1m","5m","15m","30m","1h","1D"], index=5, label_visibility="collapsed")
 
@@ -525,13 +518,11 @@ with right:
             if np.isnan(close) or close <= 0:
                 continue
 
-            # Score & success
             score10 = score_row(last)
             hz = 20
             hit_rate, samples = forward_hit_rate_for_target(ind["Close"], st.session_state.target_gain/100, horizon_bars=hz)
             success_blend = blended_success_pct(hit_rate, score10)
 
-            # Position sizing and P/L (using your % stop)
             shares = int(st.session_state.investment_amount // close) if close > 0 else 0
             tgt_price = close * (1 + st.session_state.target_gain/100)
             stop_price = close * (1 - st.session_state.stop_loss/100)
@@ -560,5 +551,4 @@ with right:
 
     st.markdown("### 📅 Earnings Calendar (TradingView, US)")
     tradingview_earnings_widget(height=500)
-
 
