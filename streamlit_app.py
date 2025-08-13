@@ -1,6 +1,9 @@
 # streamlit_app.py
-# Full S&P 500 (505) access + manual tickers (AMD, ENPH, etc.), fast batched scan,
-# TradingView chart, indicators, % success, investment sizing, earnings/dividends.
+# S&P 500 scanner with:
+# - Always-on chart + "live search" runner
+# - Simple BUY/NEUTRAL/SELL + % success for typed ticker
+# - Top 10 scan (batched, fast), indicators, earnings & dividends
+# - Dark UI toggle
 # Educational use only — not financial advice.
 
 from datetime import datetime, timezone
@@ -11,11 +14,27 @@ import streamlit.components.v1 as components
 import yfinance as yf
 
 # -----------------------------
-# Page setup
+# Page / Theme
 # -----------------------------
 st.set_page_config(page_title="S&P 500 Scanner Pro", page_icon="📈", layout="wide")
-st.title("📈 S&P 500 Scanner — Chart, Top 10, % Success & Earnings/Dividends")
-st.caption("Full-universe scan with manual tickers (AMD, ENPH, etc.). Fast batched downloads. Data via Yahoo Finance; charts by TradingView. Not financial advice.")
+
+def inject_dark_css(enabled: bool):
+    if not enabled:
+        return
+    st.markdown("""
+    <style>
+      :root { --bg:#0e1117; --panel:#161a23; --text:#e6e6e6; --muted:#9aa0a6; --accent:#5e8bff; --good:#22c55e; --bad:#ef4444; }
+      html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
+      [data-testid="stSidebar"] { background: var(--panel) !important; }
+      .stMetric label, .stMarkdown, .stSelectbox, .stTextInput, .stNumberInput, .stRadio, .stSlider { color: var(--text) !important; }
+      .buy-badge { background: rgba(34,197,94,.15); color: #22c55e; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .sell-badge { background: rgba(239,68,68,.15); color:#ef4444; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .neutral-badge { background: rgba(94,139,255,.15); color:#5e8bff; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .runner { font-size:1.1rem; display:inline-block; margin-left:.4rem; position:relative; animation: run 1.2s linear infinite; }
+      @keyframes run { 0%{transform:translateX(0)} 50%{transform:translateX(6px)} 100%{transform:translateX(0)} }
+      .small { color: var(--muted); font-size:.9rem; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # -----------------------------
 # Small utils
@@ -35,7 +54,6 @@ def fmt(x, digits=2, default="—"):
         return default
 
 def tv_symbol(sym: str) -> str:
-    # TradingView uses dots for class tickers (e.g., BRK.B)
     return sym.replace("-", ".")
 
 # -----------------------------
@@ -51,12 +69,10 @@ def sp500_from_yf():
 
 @st.cache_data(ttl=60*60, show_spinner=False)
 def sp500_from_wiki_if_available():
-    # If lxml is installed, we can merge Wikipedia (usually most complete)
     try:
         import lxml  # noqa: F401
         tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
         df = tables[0]
-        # Normalize Berkshire etc. to Yahoo style with '-'
         syms = df["Symbol"].astype(str).str.replace(r"\.", "-", regex=True).tolist()
         return sorted(list(set(syms)))
     except Exception:
@@ -66,13 +82,11 @@ def build_universe(extra_csv: str):
     base = set(sp500_from_yf())
     wiki = set(sp500_from_wiki_if_available())
     universe = sorted(list(base.union(wiki)))
-    # Fallback subset if both are empty
     if not universe:
         universe = sorted([
             "AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM",
             "V","UNH","XOM","JNJ","PG","LLY","HD","MA","COST","BAC"
         ])
-    # Merge forced extra symbols (typed by user)
     extras = []
     if extra_csv:
         extras = [s.strip().upper() for s in extra_csv.split(",") if s.strip()]
@@ -214,73 +228,99 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
         height=height, scrolling=False
     )
 
-# -----------------------------
-# UI Controls
-# -----------------------------
+# =============================
+# Sidebar (Global)
+# =============================
 with st.sidebar:
     st.header("⚙️ Global Settings")
-    extra_tickers = st.text_input("Force‑include extra tickers (comma)", value="AMD, ENPH")
-    speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True)
+    dark_ui = st.toggle("🌙 Dark UI", value=False)
+    inject_dark_css(dark_ui)
+
+    extra_tickers = st.text_input("Force-include extra tickers (comma)", value="AMD, ENPH")
     chart_timeframe = st.selectbox("Chart timeframe", ["1m","5m","15m","30m","1h","1D","1W","1M","3M","6M"], index=5)
     tf_map = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D","1W":"W","1M":"M","3M":"M","6M":"M"}
     range_map = {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M","1W":"1Y","1M":"5Y","3M":"5Y","6M":"ALL"}
-    theme = st.radio("Chart theme", ["Light","Dark"], index=0, horizontal=True)
+    chart_theme = "Dark" if dark_ui else "Light"
+
     st.markdown("---")
-    investment_amount = st.number_input("Default investment amount ($)", 100, 100000, 1000, 100)
+    st.write("**Trade Defaults**")
+    investment_amount = st.number_input("Investment amount ($)", 100, 100000, 1000, 100)
     target_gain = st.number_input("Target gain (%)", 1.0, 50.0, 10.0, 0.5)
     stop_loss = st.number_input("Stop loss (%)", 1.0, 30.0, 5.0, 0.5)
+    horizon_bars = st.slider("Bars to check for target hit (horizon)", 5, 60, 20, 1, help="Used for % success (hit-rate).")
 
-# Build universe with extras merged (so AMD/ENPH are guaranteed present)
+# Universe after extras (ensures AMD/ENPH etc. present)
 UNIVERSE = build_universe(extra_tickers)
 
 left, right = st.columns([1.25, 1])
 
-# ----- Left: Chart & Search -----
+# =============================
+# Left: Always-On Chart & "Live" Search
+# =============================
 with left:
-    st.subheader("🔎 Always-On Chart & Search")
+    st.subheader("🔎 Live Search & Chart")
+    col_a, col_b = st.columns([0.65, 0.35])
 
-    # Free text input (ANY symbol: AMD, ENPH, etc.)
-    manual_symbol = st.text_input("Type a ticker and press Enter", value="AMD").strip().upper()
-    # Also provide a searchable dropdown over the full universe
+    with col_a:
+        manual_symbol = st.text_input("Type a ticker and press Enter", value="AMD").strip().upper()
+    with col_b:
+        st.markdown('<div class="small">Live search</div>', unsafe_allow_html=True)
+        st.markdown('🏃‍♂️<span class="runner"> </span>', unsafe_allow_html=True)
+
+    # Also offer dropdown of full S&P 500
     dropdown_symbol = st.selectbox("…or pick from S&P 500", UNIVERSE, index=min(UNIVERSE.index("AAPL") if "AAPL" in UNIVERSE else 0, len(UNIVERSE)-1))
-    current_symbol = manual_symbol or dropdown_symbol
 
-    tradingview_iframe(current_symbol, tf_map[chart_timeframe], range_map[chart_timeframe], theme, height=560)
+    symbol = manual_symbol or dropdown_symbol
+    tradingview_iframe(symbol, tf_map[chart_timeframe], range_map[chart_timeframe], chart_theme, height=560)
 
-    # Quick daily metrics for the chosen symbol
+    # Manual symbol analysis (daily for stability)
     try:
-        df_m = yf.download(current_symbol, period="1y", interval="1d", auto_adjust=False, progress=False)
+        df_m = yf.download(symbol, period="1y", interval="1d", auto_adjust=False, progress=False)
         if df_m is None or df_m.empty:
             st.warning("No Yahoo data for this symbol.")
         else:
-            ind_m = compute_indicators(df_m)
-            last = ind_m.iloc[-1]
+            ind = compute_indicators(df_m)
+            last = ind.iloc[-1]
             price = safe_float(last.get("Close"))
-            ema20 = safe_float(last.get("EMA20"))
-            ema50 = safe_float(last.get("EMA50"))
-            ema200 = safe_float(last.get("EMA200"))
-            rsi14 = safe_float(last.get("RSI14"))
-            macd_val = safe_float(last.get("MACD"))
-            macd_sig = safe_float(last.get("MACD_SIGNAL"))
-            bb_mid = safe_float(last.get("BB_MID"))
-            bb_up = safe_float(last.get("BB_UP"))
-            bb_low = safe_float(last.get("BB_LOW"))
-            pctb = safe_float(last.get("BB_PCTB"))
+            ema20 = safe_float(last.get("EMA20")); ema50 = safe_float(last.get("EMA50")); ema200 = safe_float(last.get("EMA200"))
+            rsi14 = safe_float(last.get("RSI14")); macd_val = safe_float(last.get("MACD")); macd_sig = safe_float(last.get("MACD_SIGNAL"))
+            bb_mid = safe_float(last.get("BB_MID")); pctb = safe_float(last.get("BB_PCTB"))
 
+            # % Success on daily bars for the manual symbol
+            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], target_gain/100, horizon_bars=horizon_bars)
+
+            # Simple signal
+            score = score_row(last)
+            if score >= 4 and (not np.isnan(hit_rate) and hit_rate >= 55):
+                signal_badge = '<span class="buy-badge">BUY</span>'
+            elif score <= 2 and (not np.isnan(hit_rate) and hit_rate < 45):
+                signal_badge = '<span class="sell-badge">SELL</span>'
+            else:
+                signal_badge = '<span class="neutral-badge">NEUTRAL</span>'
+
+            tgt = price * (1 + target_gain/100)
+            stp = price * (1 - stop_loss/100)
+            rr = (tgt - price) / max(price - stp, 1e-9)
+
+            st.markdown(f"### {symbol} &nbsp; {signal_badge}", unsafe_allow_html=True)
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Price", f"${fmt(price,2)}")
-            c2.metric("RSI(14)", fmt(rsi14,1))
-            c3.metric("EMA20>EMA50", "Yes ✅" if ema20 > ema50 else "No ❌")
-            c4.metric("EMA50>EMA200", "Yes ✅" if ema50 > ema200 else "No ❌")
-            c5.metric("MACD−Signal", fmt(macd_val - macd_sig, 3))
-            st.write(f"**Bollinger(20,2):** Mid {fmt(bb_mid,2)}, Upper {fmt(bb_up,2)}, Lower {fmt(bb_low,2)}, %B {fmt(pctb,2)}")
-    except Exception:
-        st.warning("Unable to load quick metrics for this symbol.")
+            c2.metric("% Success", f"{fmt(hit_rate,1)}%", help=f"Hit-rate to reach +{target_gain:.1f}% within {horizon_bars} bars (n={samples}).")
+            c3.metric("Score (0-5)", f"{score}")
+            c4.metric("Target", f"${fmt(tgt,2)}")
+            c5.metric("R/R", fmt(rr,2))
 
-# ----- Right: Scan -----
+            st.caption(f"RSI(14) {fmt(rsi14,1)} | EMA20>EMA50 {'✅' if ema20>ema50 else '❌'} | EMA50>EMA200 {'✅' if ema50>ema200 else '❌'} | MACD−Signal {fmt(macd_val-macd_sig,3)} | BB %B {fmt(pctb,2)}")
+    except Exception:
+        st.warning("Unable to analyze this symbol.")
+
+# =============================
+# Right: Top-10 Scan + Earnings/Dividends
+# =============================
 with right:
     st.subheader("🏆 Top 10 Scan")
 
+    speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True)
     scan_tf = st.selectbox("Scan timeframe (Full mode only)", ["1m","5m","15m","30m","1h","1D"], index=5)
     scan_tf_to_period = {
         "1m": ("1d", "1m"),
@@ -290,14 +330,14 @@ with right:
         "1h": ("3mo", "1h"),
         "1D": ("1y", "1d"),
     }
-    max_scan = st.slider("Max symbols to scan", 50, 505, 505, 5)  # default now full 505
+    max_scan = st.slider("Max symbols to scan", 50, 505, 505, 5)
     run = st.button("🚀 Run Scan")
 
     if run:
         period, interval = scan_tf_to_period["1D"] if speed_mode.startswith("Quick") else scan_tf_to_period[scan_tf]
         symbols = UNIVERSE[:max_scan]
 
-        st.info(f"Scanning {len(symbols)} symbols on {interval}… (batched)")
+        st.info(f"🏃 Scanning {len(symbols)} symbols on {interval}… (batched)")
         data_dict = download_batched(symbols, period, interval)
 
         rows, todays_earnings, todays_divs = [], [], []
@@ -313,16 +353,14 @@ with right:
                 continue
             score = score_row(last)
 
-            # Investment sizing & P/L
             shares = int(investment_amount // close) if close > 0 else 0
             tgt_price = close * (1 + target_gain/100)
             stop_price = close * (1 - stop_loss/100)
             potential_profit = (tgt_price - close) * shares
 
-            # % Success (hit rate) on this timeframe
-            # horizon_bars ~ 20 bars by default (~1 month on daily; ~100 min on 5m)
-            horizon_bars = 20 if interval != "1m" else 60
-            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], target_gain/100, horizon_bars=horizon_bars)
+            # % Success
+            hz = horizon_bars if interval == "1d" else max(10, min(60, horizon_bars))
+            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], target_gain/100, horizon_bars=hz)
 
             rows.append({
                 "Symbol": sym,
@@ -337,7 +375,7 @@ with right:
                 "Samples": samples
             })
 
-            # Earnings/Dividends today (best-effort)
+            # Corporate actions (best-effort)
             try:
                 tk = yf.Ticker(sym)
                 cal = getattr(tk, "calendar", None)
@@ -357,17 +395,18 @@ with right:
                 pass
 
         if not rows:
-            st.warning("No candidates collected. Try Quick (Daily) mode or reduce timeframe strictness.")
+            st.warning("No candidates collected. Try Quick (Daily) mode or scan fewer symbols.")
         else:
             dfres = pd.DataFrame(rows).sort_values(["Score","% Success"], ascending=[False, False]).head(10).reset_index(drop=True)
             st.dataframe(dfres, use_container_width=True)
 
-            pick = st.selectbox("📊 View Top‑10 chart:", dfres["Symbol"], index=0)
-            tradingview_iframe(pick, tf_map[chart_timeframe], range_map[chart_timeframe], theme, height=420)
+            pick = st.selectbox("📊 View Top-10 chart:", dfres["Symbol"], index=0)
+            tradingview_iframe(pick, {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D"}[scan_tf], {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M"}[scan_tf], chart_theme, height=420)
 
         st.markdown("### 📅 Earnings Today")
         st.dataframe(pd.DataFrame(todays_earnings) if todays_earnings else pd.DataFrame([{"Symbol":"—"}]), use_container_width=True)
 
         st.markdown("### 💸 Dividends Today")
         st.dataframe(pd.DataFrame(todays_divs) if todays_divs else pd.DataFrame([{"Symbol":"—"}]), use_container_width=True)
+
 
