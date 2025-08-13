@@ -1,78 +1,164 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import streamlit.components.v1 as components
+import numpy as np
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="Market Indicators + TradingView", layout="wide")
+# --- Core Functions ---
 
-ticker = st.sidebar.text_input("Ticker", "AAPL").upper()
-period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
-interval = st.sidebar.selectbox("Interval", ["1d", "1h", "30m"], index=0)
+@st.cache_data(ttl=3600)
+def get_sp500_tickers():
+    url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+    try:
+        tables = pd.read_html(url)
+        return tables[0]['Symbol'].tolist()
+    except Exception as e:
+        st.error(f"Failed to load S&P 500 tickers: {e}")
+        return []
 
-@st.cache_data(ttl=300)
-def load_data(ticker, period, interval):
-    df = yf.download(ticker, period=period, interval=interval, progress=False)
-    return df.dropna()
+@st.cache_data
+def calculate_indicators(df):
+    df_copy = df.copy()
+    df_copy['SMA200'] = df_copy['Close'].rolling(window=200).mean()
+    df_copy['EMA20'] = df_copy['Close'].ewm(span=20, adjust=False).mean()
+    df_copy['EMA50'] = df_copy['Close'].ewm(span=50, adjust=False).mean()
+    delta = df_copy['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df_copy['RSI'] = 100 - (100 / (1 + rs))
+    df_copy.dropna(inplace=True)
+    return df_copy
 
-df = load_data(ticker, period, interval)
+@st.cache_data
+def run_backtest(_df):
+    df = _df.copy()
+    trades = []
+    in_position = False
+    buy_price = 0
+    buy_date = None
+    df['EMA_cross_above'] = (df['EMA20'].shift(1) < df['EMA50'].shift(1)) & (df['EMA20'] > df['EMA50'])
+    df['EMA_cross_below'] = (df['EMA20'].shift(1) > df['EMA50'].shift(1)) & (df['EMA20'] < df['EMA50'])
 
-if df.empty:
-    st.error("No data found.")
-    st.stop()
+    for i in range(len(df)):
+        if in_position:
+            if df['Close'].iloc[i] >= buy_price * 1.10 or df['EMA_cross_below'].iloc[i]:
+                sell_price = df['Close'].iloc[i]
+                trades.append({'buy_date': buy_date, 'sell_date': df.index[i], 'buy_price': buy_price, 'sell_price': sell_price, 'profit': (sell_price - buy_price) / buy_price})
+                in_position = False
+        if not in_position:
+            if df['EMA_cross_above'].iloc[i] and df['Close'].iloc[i] > df['SMA200'].iloc[i] and df['RSI'].iloc[i] < 70:
+                in_position = True
+                buy_price = df['Close'].iloc[i]
+                buy_date = df.index[i]
 
-# Debug: show columns
-st.write("Raw columns:", df.columns)
+    if not trades:
+        return pd.DataFrame(), df
 
-# Flatten MultiIndex columns if needed
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = ['_'.join(filter(None, col)).strip() for col in df.columns.values]
+    return pd.DataFrame(trades), df
 
-# Debug: show flattened columns
-st.write("Flattened columns:", df.columns)
+def plot_signals(df, trades_df):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close Price'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], mode='lines', name='20-day EMA', line=dict(color='orange')))
+    fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], mode='lines', name='50-day EMA', line=dict(color='purple')))
+    fig.add_trace(go.Scatter(x=df.index, y=df['SMA200'], mode='lines', name='200-day SMA', line=dict(color='gray', dash='dash')))
+    buy_signals = trades_df[trades_df['profit'] != 0] # Filter out open trades for plotting
+    fig.add_trace(go.Scatter(x=buy_signals['buy_date'], y=buy_signals['buy_price'], mode='markers', marker_symbol='triangle-up', marker_color='green', marker_size=12, name='Buy Signal'))
+    fig.add_trace(go.Scatter(x=buy_signals['sell_date'], y=buy_signals['sell_price'], mode='markers', marker_symbol='triangle-down', marker_color='red', marker_size=12, name='Sell Signal'))
+    fig.update_layout(title='Stock Price with Buy/Sell Signals', xaxis_title='Date', yaxis_title='Price', legend_title='Legend', template='plotly_dark')
+    return fig
 
-# Try to find Close column (could be 'Close' or 'Close_TICKER' etc)
-close_col = None
-for col in df.columns:
-    if col.lower().startswith("close"):
-        close_col = col
-        break
+def run_analysis(ticker):
+    try:
+        data = yf.download(ticker, period="5y", progress=False)
+        if data.empty:
+            st.error(f"No data found for ticker {ticker}.")
+            return
 
-if close_col is None:
-    st.error("Close price column not found!")
-    st.stop()
+        with st.spinner(f"Analyzing {ticker}..."):
+            df_indicators = calculate_indicators(data)
+            trades_df, df_with_signals = run_backtest(df_indicators)
 
-# Calculate indicators
-df["SMA20"] = df[close_col].rolling(window=20).mean()
-df["EMA50"] = df[close_col].ewm(span=50, adjust=False).mean()
+            st.subheader(f"Backtest Results for {ticker}")
+            if not trades_df.empty:
+                success_rate = (trades_df['profit'] > 0).mean() * 100
+                col1, col2 = st.columns(2)
+                col1.metric("Success Rate", f"{success_rate:.2f}%")
+                col2.metric("Number of Trades Found", len(trades_df))
+                st.plotly_chart(plot_signals(df_with_signals, trades_df), use_container_width=True)
+            else:
+                st.warning("No trades were found for this stock with the current strategy.")
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
 
-st.title(f"{ticker} — Technical Indicators")
-st.line_chart(df[[close_col, "SMA20", "EMA50"]])
+# --- Streamlit App UI ---
+st.set_page_config(page_title="Stock Signal App", layout="wide")
+st.title("📈 Stock Investment Signal Analyzer")
+st.write("This app backtests a trading strategy and is for educational purposes only. It does not provide financial advice.")
 
-# TradingView embed widget
-tradingview_html = f"""
-<div class="tradingview-widget-container">
-  <div id="tradingview_{ticker}"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script type="text/javascript">
-  new TradingView.widget({{
-    "width": "100%",
-    "height": 500,
-    "symbol": "{ticker}",
-    "interval": "D",
-    "timezone": "Etc/UTC",
-    "theme": "light",
-    "style": "1",
-    "locale": "en",
-    "toolbar_bg": "#f1f3f6",
-    "enable_publishing": false,
-    "allow_symbol_change": true,
-    "container_id": "tradingview_{ticker}"
-  }});
-  </script>
-</div>
-"""
+# Initialize session state
+if 'selected_ticker' not in st.session_state:
+    st.session_state.selected_ticker = 'MSFT'
 
-components.html(tradingview_html, height=520, scrolling=True)
+with st.expander("ℹ️ About the Strategy"):
+    st.write("""
+    - **Buy Signal:** Price > 200-day SMA AND 20-day EMA crosses above 50-day EMA AND RSI < 70.
+    - **Sell Signal:** 10% profit OR 20-day EMA crosses below 50-day EMA.
+    """)
 
+# --- Screener Section ---
+st.header("🔍 S&P 500 Stock Screener")
+if st.button("Scan S&P 500 for Top 10 Stocks"):
+    st.session_state.screener_ran = True
+    st.session_state.screener_results = None
+    tickers = get_sp500_tickers()
+    if tickers:
+        results = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
+        for i, ticker in enumerate(tickers):
+            status_text.text(f"Scanning: {ticker} ({i+1}/{len(tickers)})")
+            try:
+                data = yf.download(ticker, period="5y", progress=False, timeout=5)
+                if len(data) > 252:
+                    df_indicators = calculate_indicators(data)
+                    trades_df, _ = run_backtest(df_indicators)
+                    if not trades_df.empty and len(trades_df) >= 3:
+                        success_rate = (trades_df['profit'] > 0).mean() * 100
+                        results.append({'Ticker': ticker, 'Success Rate (%)': success_rate, 'Trades': len(trades_df)})
+            except Exception:
+                pass
+            progress_bar.progress((i + 1) / len(tickers))
 
+        status_text.text("Scan complete!")
+        progress_bar.empty()
+
+        if results:
+            screener_df = pd.DataFrame(results).sort_values(by='Success Rate (%)', ascending=False).head(10)
+            st.session_state.screener_results = screener_df
+        else:
+            st.warning("No stocks met the screening criteria.")
+
+if 'screener_results' in st.session_state and st.session_state.screener_results is not None:
+    st.subheader("Top 10 Screener Results")
+    for index, row in st.session_state.screener_results.iterrows():
+        col1, col2, col3, col4 = st.columns([1, 2, 2, 2])
+        with col1:
+            st.text(row['Ticker'])
+        with col2:
+            st.text(f"Success: {row['Success Rate (%)']:.2f}%")
+        with col3:
+            st.text(f"Trades: {row['Trades']}")
+        with col4:
+            if st.button("View Details", key=f"details_{row['Ticker']}"):
+                st.session_state.selected_ticker = row['Ticker']
+                # The script will rerun and the analysis section will pick up the new ticker
+
+# --- Detailed Analysis Section ---
+st.header("📊 Detailed Stock Analysis")
+ticker_input = st.text_input("Enter a stock ticker:", value=st.session_state.selected_ticker, key="ticker_input").upper()
+
+if ticker_input:
+    run_analysis(ticker_input)
