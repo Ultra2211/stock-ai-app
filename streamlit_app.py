@@ -467,5 +467,6 @@ with right:
 
     st.markdown("### 📅 Earnings Calendar (TradingView, US)")
     tradingview_earnings_widget(chart_theme, height=500)
+    
 
 
