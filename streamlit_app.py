@@ -30,7 +30,6 @@ def get_sp500_tickers():
 
 @st.cache_data
 def calculate_indicators(df):
-    """Calculates all necessary technical indicators with robust error handling."""
     df_copy = df.copy()
     df_copy['SMA200'] = df_copy['Close'].rolling(window=200).mean()
     df_copy['EMA20'] = df_copy['Close'].ewm(span=20, adjust=False).mean()
@@ -38,14 +37,13 @@ def calculate_indicators(df):
     delta = df_copy['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = (gain / loss).replace([np.inf, -np.inf], 999).fillna(0) # Handle division by zero and NaNs
+    rs = (gain / loss).replace([np.inf, -np.inf], 999).fillna(0)
     df_copy['RSI'] = 100 - (100 / (1 + rs))
     df_copy.dropna(inplace=True)
     return df_copy
 
 @st.cache_data
 def run_backtest(_df):
-    """Runs the backtesting simulation based on the defined strategy."""
     df = _df.copy()
     trades = []
     in_position = False
@@ -69,7 +67,6 @@ def run_backtest(_df):
     return pd.DataFrame(trades)
 
 def plot_signals(df, trades_df):
-    """Creates an interactive Plotly chart with buy/sell signals."""
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close Price'))
     fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], mode='lines', name='20-day EMA'))
@@ -82,7 +79,6 @@ def plot_signals(df, trades_df):
     return fig
 
 def display_analysis_results(ticker):
-    """Downloads data, runs analysis, and displays results for a single ticker."""
     try:
         data = yf.download(ticker, period="5y", progress=False)
         if data.empty:
@@ -105,21 +101,10 @@ def display_analysis_results(ticker):
         st.error(f"An unexpected error occurred during analysis for {ticker}:")
         st.code(f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}")
 
-# --- Streamlit App UI ---
-st.set_page_config(page_title="Stock Signal App", layout="wide")
-st.title("📈 Stock Investment Signal Analyzer")
-st.write("This app backtests a trading strategy. This is for educational purposes only and is not financial advice.")
-
-with st.expander("ℹ️ About the Strategy"):
-    st.write("Buy: Price > 200-SMA & 20-EMA crosses above 50-EMA & RSI < 70. Sell: 10% profit or 20-EMA crosses below 50-EMA.")
-
-# --- Screener Section ---
-st.header("🔍 Stock Screener")
-if st.button("Scan For Top Performing Stocks"):
+def run_screener(progress_bar, status_text):
+    """Scans stocks and returns results and logs."""
     tickers = get_sp500_tickers()
-    results = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    results, error_log, skip_log = [], [], []
 
     for i, ticker in enumerate(tickers):
         status_text.text(f"Scanning: {ticker} ({i+1}/{len(tickers)})")
@@ -132,17 +117,44 @@ if st.button("Scan For Top Performing Stocks"):
                     trades_df['profit'] = (trades_df['sell_price'] - trades_df['buy_price']) / trades_df['buy_price']
                     success_rate = (trades_df['profit'] > 0).mean() * 100
                     results.append({'Ticker': ticker, 'Success Rate (%)': success_rate, 'Trades': len(trades_df)})
-        except Exception:
-            pass
+                else:
+                    skip_log.append(f"{ticker}: Skipped (Found {len(trades_df)} trades, need 3+)")
+            else:
+                skip_log.append(f"{ticker}: Skipped (Downloaded {len(data)} rows, need 252+)")
+        except Exception as e:
+            error_log.append(f"Could not process {ticker}: {e}")
         progress_bar.progress((i + 1) / len(tickers))
 
     status_text.text("Scan complete!")
-    if results:
-        screener_df = pd.DataFrame(results).sort_values(by='Success Rate (%)', ascending=False).head(10)
+    return pd.DataFrame(results), skip_log, error_log
+
+# --- Streamlit App UI ---
+st.set_page_config(page_title="Stock Signal App", layout="wide")
+st.title("📈 Stock Investment Signal Analyzer")
+st.write("This app backtests a trading strategy. This is for educational purposes only and is not financial advice.")
+
+with st.expander("ℹ️ About the Strategy"):
+    st.write("Buy: Price > 200-SMA & 20-EMA crosses above 50-EMA & RSI < 70. Sell: 10% profit or 20-EMA crosses below 50-EMA.")
+
+# --- Screener Section ---
+st.header("🔍 Stock Screener")
+if st.button("Scan For Top Performing Stocks"):
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    screener_df, skip_log, error_log = run_screener(progress_bar, status_text)
+
+    if not screener_df.empty:
         st.subheader("Top 10 Screener Results")
-        st.dataframe(screener_df.style.format({'Success Rate (%)': '{:.2f}'}))
+        st.dataframe(screener_df.sort_values(by='Success Rate (%)', ascending=False).head(10).style.format({'Success Rate (%)': '{:.2f}'}))
     else:
         st.warning("No stocks that met the screening criteria (min. 3 trades) were found.")
+
+    if skip_log:
+        with st.expander("Show Skipped Stock Log"):
+            st.write(skip_log)
+    if error_log:
+        with st.expander("Show Errors from Scan"):
+            st.write(error_log)
 
 # --- Detailed Analysis Section ---
 st.header("📊 Detailed Stock Analysis")
