@@ -1,12 +1,11 @@
 # streamlit_app.py
-# Dark-mode-only S&P 500 scanner with robust dark styling for ALL dropdowns/menus.
+# Dark-mode-only S&P 500 scanner with robust dark styling for ALL dropdowns/menus (including portal/ARIA listbox).
 # - TradingView chart + ticker search (timeframe controlled on the chart)
 # - Expanded indicators: EMA20/50/200, RSI, MACD, Bollinger, Stochastic, ADX(+DI/−DI), MFI, ATR, Supertrend(10,3), OBV
 # - 10-point score + blended % Success
 # - Top-10 scan (batched) + TradingView earnings calendar (US)
 # Educational use only — not financial advice.
 
-from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -23,13 +22,14 @@ def inject_dark_css():
     <style>
       :root {
         --bg:#0e1117; --panel:#161a23; --text:#ffffff; --muted:#c8c8c8;
-        --blue:#2563eb; --blue-soft:#1d4ed8; --blue-contrast:#ffffff;
+        --blue:#2563eb; --blue-contrast:#ffffff;
         --border:#2a2f3a; --input:#11141a; --menu:#0f1420; --menu-hover:#1d2330;
         --good:#22c55e; --bad:#ef4444;
       }
 
       html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
       [data-testid="stSidebar"] { background: var(--panel) !important; }
+
       /* Force WHITE text globally in dark mode */
       label, .stMarkdown, .stRadio, .stSlider, .stSelectbox, .stNumberInput, .stTextInput,
       div, span, p { color: var(--text) !important; }
@@ -39,32 +39,44 @@ def inject_dark_css():
         color: var(--text) !important; background: var(--input) !important; border-color: var(--border) !important;
       }
 
-      /* ===== BaseWeb Select (Streamlit selectbox) – value container, parts, caret ===== */
+      /* ====== SELECTBOX / BASEWEB SELECT (value container + caret + input) ====== */
+      /* Value container */
       div[data-baseweb="select"] > div {
         background: var(--input) !important;
         border-color: var(--border) !important;
         color: var(--text) !important;
       }
-      /* ensure all descendants (value text, placeholder, singleValue, input) are white */
+      /* Text inside the value area and caret */
       div[data-baseweb="select"] * { color: var(--text) !important; }
-      div[data-baseweb="select"] input { color: var(--text) !important; }
       div[data-baseweb="select"] svg { fill: var(--text) !important; }
+      div[data-baseweb="select"] input { color: var(--text) !important; caret-color: var(--text) !important; }
 
-      /* ===== Select MENU overlay ===== */
+      /* Sometimes the clickable area is role="button" or role="combobox" */
+      .stSelectbox [role="combobox"],
+      .stSelectbox [role="button"] {
+        background: var(--input) !important;
+        color: var(--text) !important;
+        border-color: var(--border) !important;
+      }
+
+      /* ====== DROPDOWN MENU (handles BaseWeb menu + ARIA listbox portals) ====== */
+      /* BaseWeb portal menu */
       div[data-baseweb="menu"] {
         background: var(--menu) !important;
         border: 1px solid var(--border) !important;
       }
-      /* text within menu (options, groups, etc.) */
       div[data-baseweb="menu"] * { color: var(--text) !important; }
-      div[data-baseweb="option"] {
-        background: transparent !important;
-        color: var(--text) !important;
-      }
+      div[data-baseweb="option"] { background: transparent !important; color: var(--text) !important; }
       div[data-baseweb="option"]:hover { background: var(--menu-hover) !important; }
       div[data-baseweb="option"][aria-selected="true"] { background: var(--menu-hover) !important; }
 
-      /* Spinner visibility */
+      /* ARIA listbox fallback (some Streamlit versions render menu this way) */
+      [role="listbox"] { background: var(--menu) !important; border: 1px solid var(--border) !important; }
+      [role="listbox"] * { color: var(--text) !important; }
+      [role="option"] { background: transparent !important; color: var(--text) !important; }
+      [role="option"][aria-selected="true"], [role="option"]:hover { background: var(--menu-hover) !important; }
+
+      /* Spinner / alerts / info boxes text visibility */
       div[data-testid="stSpinner"] *, div[role="alert"] * { color: var(--text) !important; }
 
       /* Compact metrics */
@@ -121,7 +133,7 @@ def tv_symbol(sym: str) -> str:
 DEFAULT_INTERVAL = "D"   # daily
 DEFAULT_RANGE = "6M"     # 6 months initial
 
-# For Top‑10 mini chart (initial view)
+# For Top-10 mini chart (initial view)
 TF_MAP = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D"}
 RANGE_MAP = {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M"}
 
@@ -216,7 +228,7 @@ def adx(df, period=14):
     minus_di = 100 * pd.Series(minus_dm).ewm(alpha=1/period, adjust=False).mean() / (tr_sm + 1e-12)
     dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-12))
     adx_val = dx.ewm(alpha=1/period, adjust=False).mean()
-    return plus_di.rename("PLUS_DI"), minus_di.rename("MINUS_DI"), adx_val.rename("ADX")
+    return pd.Series(plus_di, index=df.index, name="PLUS_DI"), pd.Series(minus_di, index=df.index, name="MINUS_DI"), pd.Series(adx_val, index=df.index, name="ADX")
 
 def mfi(df, period=14):
     tp = (df["High"] + df["Low"] + df["Close"]) / 3.0
@@ -366,10 +378,8 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
         "https://s.tradingview.com/widgetembed/?"
         f"symbol={tv_symbol(symbol)}&interval={interval_code}&range={range_code}"
         "&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=1"
-        "&toolbarbg=f1f3f6"
-        f"&theme=dark"
-        "&style=1&timezone=Etc/UTC&withdateranges=1&allow_symbol_change=1"
-        "&details=1&hideideas=1"
+        "&toolbarbg=f1f3f6&theme=dark&style=1&timezone=Etc/UTC&withdateranges=1"
+        "&allow_symbol_change=1&details=1&hideideas=1"
     )
     components.html(
         f'<iframe class="tv-card" src="{src}" width="100%" height="{height}" frameborder="0" allowtransparency="true" scrolling="no"></iframe>',
@@ -378,12 +388,8 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
 
 def tradingview_earnings_widget(height: int = 500):
     cfg = {
-        "width": "100%",
-        "height": height,
-        "colorTheme": "dark",
-        "isTransparent": False,
-        "locale": "en",
-        "market": "us"
+        "width": "100%", "height": height, "colorTheme": "dark",
+        "isTransparent": False, "locale": "en", "market": "us"
     }
     html = f"""
     <div class="tradingview-widget-container tv-card">
@@ -434,7 +440,7 @@ with left:
         else:
             ind = compute_indicators(df_m)
             last = ind.iloc[-1]
-            price = safe_float(last.get("Close"))
+            price = float(last["Close"])
 
             # Scores & success
             score10 = score_row(last)
@@ -452,17 +458,17 @@ with left:
             # Targets & stops
             tgt = price * (1 + st.session_state.target_gain/100)
             stp_pct_val = price * (1 - st.session_state.stop_loss/100)
-            atr_val = safe_float(last.get("ATR14"))
+            atr_val = float(last["ATR14"]) if pd.notna(last["ATR14"]) else np.nan
             stp_atr = price - 1.5 * atr_val if not np.isnan(atr_val) else np.nan
             stp_use = stp_pct_val
             rr = (tgt - price) / max(price - stp_use, 1e-9)
 
-            ema20 = safe_float(last.get("EMA20")); ema50 = safe_float(last.get("EMA50")); ema200 = safe_float(last.get("EMA200"))
-            rsi14 = safe_float(last.get("RSI14")); macd_spread = safe_float(last.get("MACD")) - safe_float(last.get("MACD_SIGNAL"))
-            pctb = safe_float(last.get("BB_PCTB"))
-            adx_v = safe_float(last.get("ADX")); di_plus = safe_float(last.get("PLUS_DI")); di_minus = safe_float(last.get("MINUS_DI"))
-            sto_k = safe_float(last.get("STO_K")); sto_d = safe_float(last.get("STO_D")); mfi14 = safe_float(last.get("MFI14"))
-            st_up = bool(last.get("ST_UPTREND"))
+            ema20 = float(last["EMA20"]); ema50 = float(last["EMA50"]); ema200 = float(last["EMA200"])
+            rsi14 = float(last["RSI14"]); macd_spread = float(last["MACD"]) - float(last["MACD_SIGNAL"])
+            pctb = float(last["BB_PCTB"])
+            adx_v = float(last["ADX"]); di_plus = float(last["PLUS_DI"]); di_minus = float(last["MINUS_DI"])
+            sto_k = float(last["STO_K"]); sto_d = float(last["STO_D"]); mfi14 = float(last["MFI14"])
+            st_up = bool(last["ST_UPTREND"])
 
             st.markdown(f"### <span class='ticker-accent'>{symbol}</span> &nbsp; {signal_badge}", unsafe_allow_html=True)
             c1, c2, c3, c4, c5 = st.columns(5)
@@ -488,7 +494,7 @@ with left:
 with right:
     st.subheader("🏆 Top 10 Scan")
 
-    # Force a BLUE label above the timeframe select; collapse the default label to avoid duplicate
+    # BLUE label above the timeframe select; collapse the default label to avoid duplicate
     st.markdown("<div class='blue-label'>Scan timeframe (Full mode only)</div>", unsafe_allow_html=True)
     speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True, label_visibility="visible")
     scan_tf = st.selectbox("", ["1m","5m","15m","30m","1h","1D"], index=5, label_visibility="collapsed")
@@ -514,8 +520,8 @@ with right:
                 continue
             ind = compute_indicators(df)
             last = ind.iloc[-1]
-            close = safe_float(last.get("Close"))
-            if np.isnan(close) or close <= 0:
+            close = float(last["Close"])
+            if close <= 0:
                 continue
 
             score10 = score_row(last)
@@ -551,4 +557,3 @@ with right:
 
     st.markdown("### 📅 Earnings Calendar (TradingView, US)")
     tradingview_earnings_widget(height=500)
-
