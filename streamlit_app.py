@@ -1,5 +1,5 @@
-# streamlit_app.py
-# Dark-mode-only S&P 500 scanner with robust dark styling for ALL dropdowns/menus (including portal/ARIA listbox).
+## streamlit_app.py
+# Dark-mode-only S&P 500 scanner with bulletproof dark dropdowns (value + menu via CSS + MutationObserver JS).
 # - TradingView chart + ticker search (timeframe controlled on the chart)
 # - Expanded indicators: EMA20/50/200, RSI, MACD, Bollinger, Stochastic, ADX(+DI/−DI), MFI, ATR, Supertrend(10,3), OBV
 # - 10-point score + blended % Success
@@ -17,108 +17,115 @@ import yfinance as yf
 # -----------------------------
 st.set_page_config(page_title="S&P 500 Scanner Pro (Dark)", page_icon="📈", layout="wide")
 
-def inject_dark_css():
-    st.markdown("""
+def force_dark_selects():
+    """Injects CSS + JS to ensure ALL selectboxes and their menus are dark with white text."""
+    components.html("""
     <style>
       :root {
         --bg:#0e1117; --panel:#161a23; --text:#ffffff; --muted:#c8c8c8;
         --blue:#2563eb; --blue-contrast:#ffffff;
         --border:#2a2f3a; --input:#11141a; --menu:#0f1420; --menu-hover:#1d2330;
-        --good:#22c55e; --bad:#ef4444;
       }
 
-      html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
-      [data-testid="stSidebar"] { background: var(--panel) !important; }
-
-      /* Force WHITE text globally in dark mode */
-      label, .stMarkdown, .stRadio, .stSlider, .stSelectbox, .stNumberInput, .stTextInput,
-      div, span, p { color: var(--text) !important; }
+      html, body { background: var(--bg) !important; color: var(--text) !important; }
+      /* Global text white */
+      * { color: var(--text); }
 
       /* Inputs */
       .stTextInput input, .stNumberInput input {
-        color: var(--text) !important; background: var(--input) !important; border-color: var(--border) !important;
+        background: var(--input) !important; color: var(--text) !important; border-color: var(--border) !important;
       }
 
-      /* ====== SELECTBOX / BASEWEB SELECT (value container + caret + input) ====== */
-      /* Value container */
+      /* ==== SELECT VALUE AREA (BaseWeb) ==== */
       div[data-baseweb="select"] > div {
-        background: var(--input) !important;
-        border-color: var(--border) !important;
-        color: var(--text) !important;
+        background: var(--input) !important; color: var(--text) !important; border-color: var(--border) !important;
       }
-      /* Text inside the value area and caret */
       div[data-baseweb="select"] * { color: var(--text) !important; }
-      div[data-baseweb="select"] svg { fill: var(--text) !important; }
       div[data-baseweb="select"] input { color: var(--text) !important; caret-color: var(--text) !important; }
+      div[data-baseweb="select"] svg { fill: var(--text) !important; }
 
-      /* Sometimes the clickable area is role="button" or role="combobox" */
-      .stSelectbox [role="combobox"],
-      .stSelectbox [role="button"] {
-        background: var(--input) !important;
-        color: var(--text) !important;
-        border-color: var(--border) !important;
+      /* Streamlit wrapper fallbacks */
+      .stSelectbox [role="combobox"], .stSelectbox [role="button"] {
+        background: var(--input) !important; color: var(--text) !important; border-color: var(--border) !important;
       }
+      .stSelectbox div { color: var(--text) !important; }
 
-      /* ====== DROPDOWN MENU (handles BaseWeb menu + ARIA listbox portals) ====== */
-      /* BaseWeb portal menu */
+      /* ==== MENU (BaseWeb portal) ==== */
       div[data-baseweb="menu"] {
-        background: var(--menu) !important;
-        border: 1px solid var(--border) !important;
+        background: var(--menu) !important; border: 1px solid var(--border) !important;
       }
       div[data-baseweb="menu"] * { color: var(--text) !important; }
       div[data-baseweb="option"] { background: transparent !important; color: var(--text) !important; }
-      div[data-baseweb="option"]:hover { background: var(--menu-hover) !important; }
+      div[data-baseweb="option"]:hover,
       div[data-baseweb="option"][aria-selected="true"] { background: var(--menu-hover) !important; }
 
-      /* ARIA listbox fallback (some Streamlit versions render menu this way) */
+      /* ==== ARIA listbox fallback (some builds) ==== */
       [role="listbox"] { background: var(--menu) !important; border: 1px solid var(--border) !important; }
       [role="listbox"] * { color: var(--text) !important; }
       [role="option"] { background: transparent !important; color: var(--text) !important; }
-      [role="option"][aria-selected="true"], [role="option"]:hover { background: var(--menu-hover) !important; }
+      [role="option"]:hover, [role="option"][aria-selected="true"] { background: var(--menu-hover) !important; }
 
-      /* Spinner / alerts / info boxes text visibility */
-      div[data-testid="stSpinner"] *, div[role="alert"] * { color: var(--text) !important; }
-
-      /* Compact metrics */
-      div[data-testid="stMetric"] { padding:.25rem .5rem; }
-      div[data-testid="stMetricValue"] { font-size:1.2rem; line-height:1.2rem; }
-      div[data-testid="stMetricLabel"] { font-size:.85rem; color: var(--muted) !important; }
-
-      /* Badges */
-      .buy-badge { background: rgba(34,197,94,.15); color:#22c55e; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
-      .sell-badge { background: rgba(239,68,68,.15); color:#ef4444; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
-      .neutral-badge { background: rgba(37,99,235,.15); color:#2563eb; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
-
-      .tv-card { border-radius:12px; overflow:hidden; }
-
-      /* Blue primary button (Run Scan) */
+      /* Metrics + buttons */
+      div[data-testid="stMetricValue"], div[data-testid="stMetricLabel"] { color: var(--text) !important; }
       div.stButton > button {
-        background: var(--blue) !important;
-        color: var(--blue-contrast) !important;
-        border: 1px solid var(--blue) !important;
+        background: var(--blue) !important; color: var(--blue-contrast) !important; border-color: var(--blue) !important;
       }
-      div.stButton > button:hover { filter: brightness(0.95); }
-
-      /* Blue accent for ticker heading */
       .ticker-accent { color: var(--blue); font-weight:700; }
-
-      /* Blue label utility */
+      .buy-badge{background:rgba(34,197,94,.15);color:#22c55e;padding:.35rem .6rem;border-radius:999px;font-weight:700;display:inline-block}
+      .sell-badge{background:rgba(239,68,68,.15);color:#ef4444;padding:.35rem .6rem;border-radius:999px;font-weight:700;display:inline-block}
+      .neutral-badge{background:rgba(37,99,235,.15);color:#2563eb;padding:.35rem .6rem;border-radius:999px;font-weight:700;display:inline-block}
       .blue-label { color: var(--blue) !important; font-weight:700; margin: 0 0 4px 0; }
-
-      /* Tighter control spacing */
-      .stTextInput, .stSelectbox, .stNumberInput, .stRadio, .stSlider { margin-bottom:.5rem; }
+      .tv-card { border-radius:12px; overflow:hidden; }
     </style>
-    """, unsafe_allow_html=True)
 
-inject_dark_css()
+    <script>
+      (function(){
+        const darkifyMenu = (root) => {
+          const menus = root.querySelectorAll('div[data-baseweb="menu"], [role="listbox"]');
+          menus.forEach(m => {
+            m.style.background = '#0f1420';
+            m.style.border = '1px solid #2a2f3a';
+            const all = m.querySelectorAll('*');
+            all.forEach(n => { n.style.color = '#fff'; });
+            const opts = m.querySelectorAll('div[data-baseweb="option"], [role="option"]');
+            opts.forEach(o => {
+              o.addEventListener('mouseenter', () => { o.style.background = '#1d2330'; });
+              o.addEventListener('mouseleave', () => { o.style.background = 'transparent'; });
+            });
+          });
+        };
+
+        // Initial pass
+        darkifyMenu(document);
+
+        // Observe the whole document for portaled menus appearing later
+        const obs = new MutationObserver((mutations) => {
+          mutations.forEach(m => {
+            m.addedNodes && m.addedNodes.forEach(n => {
+              try {
+                if (!(n instanceof HTMLElement)) return;
+                if (n.querySelector) darkifyMenu(n);
+                // Also re-style value containers that may re-render
+                if (n.matches && n.matches('div[data-baseweb="select"] > div')) {
+                  n.style.background = '#11141a';
+                  n.style.color = '#fff';
+                  n.style.borderColor = '#2a2f3a';
+                }
+              } catch(e){}
+            });
+          });
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
+      })();
+    </script>
+    """, height=0)
+    # height=0 keeps it invisible but runs CSS/JS
+
+force_dark_selects()
 
 # -----------------------------
-# Small utils
+# Utils
 # -----------------------------
-def safe_float(x):
-    try: return float(x)
-    except Exception: return np.nan
-
 def fmt(x, digits=2, default="—"):
     try:
         if pd.isna(x): return default
@@ -129,213 +136,152 @@ def fmt(x, digits=2, default="—"):
 def tv_symbol(sym: str) -> str:
     return sym.replace("-", ".")
 
-# Default initial chart settings (users change inside TradingView toolbar)
-DEFAULT_INTERVAL = "D"   # daily
-DEFAULT_RANGE = "6M"     # 6 months initial
-
-# For Top-10 mini chart (initial view)
+# Chart defaults (users change on TradingView toolbar)
+DEFAULT_INTERVAL = "D"
+DEFAULT_RANGE = "6M"
 TF_MAP = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D"}
 RANGE_MAP = {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M"}
 
 # -----------------------------
-# Universe builders
+# Universe
 # -----------------------------
-@st.cache_data(ttl=60*60, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def sp500_from_yf():
-    try:
-        syms = yf.tickers_sp500()
-        return sorted(list(set(syms)))
-    except Exception:
-        return []
+    try: return sorted(list(set(yf.tickers_sp500())))
+    except Exception: return []
 
-@st.cache_data(ttl=60*60, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def sp500_from_wiki_if_available():
     try:
-        import lxml  # noqa
+        import lxml  # noqa: F401
         tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
         df = tables[0]
-        syms = df["Symbol"].astype(str).str.replace(r"\.", "-", regex=True).tolist()
-        return sorted(list(set(syms)))
+        return sorted(df["Symbol"].astype(str).str.replace(r"\.", "-", regex=True).unique().tolist())
     except Exception:
         return []
 
-@st.cache_data(ttl=60*60, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def build_universe(extra_csv: str):
-    base = set(sp500_from_yf())
-    wiki = set(sp500_from_wiki_if_available())
+    base = set(sp500_from_yf()); wiki = set(sp500_from_wiki_if_available())
     universe = sorted(list(base.union(wiki)))
     if not universe:
-        universe = sorted(["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM"])
-    extras = [s.strip().upper() for s in extra_csv.split(",") if s.strip()] if extra_csv else []
+        universe = ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM"]
+    extras = [s.strip().upper() for s in (extra_csv or "").split(",") if s.strip()]
     return sorted(list(set(universe + extras)))
 
 # -----------------------------
-# Indicator calculations
+# Indicators
 # -----------------------------
-def ema(series: pd.Series, span: int) -> pd.Series:
-    return series.ewm(span=span, adjust=False).mean()
+def ema(s, span): return s.ewm(span=span, adjust=False).mean()
 
-def rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    delta = series.diff()
+def rsi(s, period=14):
+    delta = s.diff()
     gain = (delta.clip(lower=0)).ewm(alpha=1/period, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
     rs = gain / (loss + 1e-12)
     return 100 - (100 / (1 + rs))
 
-def macd(series: pd.Series, fast=12, slow=26, signal=9):
-    ema_fast = ema(series, fast)
-    ema_slow = ema(series, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = ema(macd_line, signal)
-    return macd_line, signal_line, macd_line - signal_line
+def macd(s, fast=12, slow=26, signal=9):
+    f = ema(s, fast); sl = ema(s, slow)
+    line = f - sl; sig = ema(line, signal)
+    return line, sig, line - sig
 
-def bollinger(series: pd.Series, length: int = 20, mult: float = 2.0):
-    mid = series.rolling(length).mean()
-    std = series.rolling(length).std()
-    upper = mid + mult * std
-    lower = mid - mult * std
-    pctb = (series - lower) / (upper - lower)
-    return mid, upper, lower, pctb
+def bollinger(s, length=20, mult=2.0):
+    mid = s.rolling(length).mean(); std = s.rolling(length).std()
+    up = mid + mult*std; lo = mid - mult*std
+    pctb = (s - lo) / (up - lo)
+    return mid, up, lo, pctb
 
-def stochastic(high, low, close, k=14, d=3):
-    lowest = low.rolling(k).min()
-    highest = high.rolling(k).max()
-    k_percent = 100 * (close - lowest) / (highest - lowest + 1e-12)
-    d_percent = k_percent.rolling(d).mean()
-    return k_percent, d_percent
+def stochastic(h, l, c, k=14, d=3):
+    lo = l.rolling(k).min(); hi = h.rolling(k).max()
+    kpct = 100*(c - lo) / (hi - lo + 1e-12)
+    return kpct, kpct.rolling(d).mean()
 
 def true_range(df):
-    prev_close = df["Close"].shift(1)
-    tr = pd.concat([
-        (df["High"] - df["Low"]).abs(),
-        (df["High"] - prev_close).abs(),
-        (df["Low"] - prev_close).abs()
-    ], axis=1).max(axis=1)
-    return tr
+    pc = df["Close"].shift(1)
+    return pd.concat([(df["High"]-df["Low"]).abs(), (df["High"]-pc).abs(), (df["Low"]-pc).abs()], axis=1).max(axis=1)
 
-def atr(df, period=14):
-    tr = true_range(df)
-    return tr.ewm(alpha=1/period, adjust=False).mean()
+def atr(df, period=14): return true_range(df).ewm(alpha=1/period, adjust=False).mean()
 
 def adx(df, period=14):
-    up_move = df["High"].diff()
-    down_move = -df["Low"].diff()
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-    tr = true_range(df)
-    tr_sm = pd.Series(tr).ewm(alpha=1/period, adjust=False).mean()
-    plus_di = 100 * pd.Series(plus_dm).ewm(alpha=1/period, adjust=False).mean() / (tr_sm + 1e-12)
-    minus_di = 100 * pd.Series(minus_dm).ewm(alpha=1/period, adjust=False).mean() / (tr_sm + 1e-12)
-    dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-12))
-    adx_val = dx.ewm(alpha=1/period, adjust=False).mean()
-    return pd.Series(plus_di, index=df.index, name="PLUS_DI"), pd.Series(minus_di, index=df.index, name="MINUS_DI"), pd.Series(adx_val, index=df.index, name="ADX")
+    up = df["High"].diff(); dn = -df["Low"].diff()
+    plus_dm = np.where((up > dn) & (up > 0), up, 0.0); minus_dm = np.where((dn > up) & (dn > 0), dn, 0.0)
+    tr_sm = true_range(df).ewm(alpha=1/period, adjust=False).mean()
+    plus_di = 100*pd.Series(plus_dm, index=df.index).ewm(alpha=1/period, adjust=False).mean()/(tr_sm+1e-12)
+    minus_di = 100*pd.Series(minus_dm, index=df.index).ewm(alpha=1/period, adjust=False).mean()/(tr_sm+1e-12)
+    dx = 100*(abs(plus_di - minus_di)/(plus_di + minus_di + 1e-12))
+    return plus_di.rename("PLUS_DI"), minus_di.rename("MINUS_DI"), dx.ewm(alpha=1/period, adjust=False).mean().rename("ADX")
 
 def mfi(df, period=14):
-    tp = (df["High"] + df["Low"] + df["Close"]) / 3.0
-    mf = tp * df["Volume"]
-    pos_flow = np.where(tp > tp.shift(1), mf, 0.0)
-    neg_flow = np.where(tp < tp.shift(1), mf, 0.0)
-    pos_sm = pd.Series(pos_flow).rolling(period).sum()
-    neg_sm = pd.Series(neg_flow).rolling(period).sum()
-    mfr = pos_sm / (neg_sm + 1e-12)
-    return 100 - (100 / (1 + mfr))
+    tp = (df["High"]+df["Low"]+df["Close"])/3.0
+    mf = tp*df["Volume"]
+    pos = np.where(tp > tp.shift(1), mf, 0.0); neg = np.where(tp < tp.shift(1), mf, 0.0)
+    mfr = pd.Series(pos).rolling(period).sum() / (pd.Series(neg).rolling(period).sum() + 1e-12)
+    return 100 - (100/(1+mfr))
 
 def supertrend(df, period=10, mult=3.0):
-    atr_val = atr(df, period)
-    hl2 = (df["High"] + df["Low"]) / 2.0
-    upperband = hl2 + mult * atr_val
-    lowerband = hl2 - mult * atr_val
-    final_upper = upperband.copy()
-    final_lower = lowerband.copy()
-    in_uptrend = pd.Series(index=df.index, dtype=bool)
-
+    a = atr(df, period); hl2 = (df["High"]+df["Low"])/2.0
+    up = hl2 + mult*a; lo = hl2 - mult*a
+    fu, fl = up.copy(), lo.copy()
+    uptrend = pd.Series(index=df.index, dtype=bool)
     for i in range(len(df)):
-        if i == 0:
-            in_uptrend.iloc[i] = True
-            continue
-        if df["Close"].iloc[i-1] > final_upper.iloc[i-1]:
-            in_uptrend.iloc[i] = True
-        elif df["Close"].iloc[i-1] < final_lower.iloc[i-1]:
-            in_uptrend.iloc[i] = False
+        if i == 0: uptrend.iloc[i] = True; continue
+        if df["Close"].iloc[i-1] > fu.iloc[i-1]: uptrend.iloc[i] = True
+        elif df["Close"].iloc[i-1] < fl.iloc[i-1]: uptrend.iloc[i] = False
         else:
-            in_uptrend.iloc[i] = in_uptrend.iloc[i-1]
-            if in_uptrend.iloc[i] and lowerband.iloc[i] < final_lower.iloc[i-1]:
-                lowerband.iloc[i] = final_lower.iloc[i-1]
-            if not in_uptrend.iloc[i] and upperband.iloc[i] > final_upper.iloc[i-1]:
-                upperband.iloc[i] = final_upper.iloc[i-1]
-        final_upper.iloc[i] = upperband.iloc[i]
-        final_lower.iloc[i] = lowerband.iloc[i]
-    return final_upper.rename("ST_UPPER"), final_lower.rename("ST_LOWER"), in_uptrend.rename("ST_UPTREND"), atr_val.rename("ATR")
+            uptrend.iloc[i] = uptrend.iloc[i-1]
+            if uptrend.iloc[i] and lo.iloc[i] < fl.iloc[i-1]: lo.iloc[i] = fl.iloc[i-1]
+            if (not uptrend.iloc[i]) and up.iloc[i] > fu.iloc[i-1]: up.iloc[i] = fu.iloc[i-1]
+        fu.iloc[i] = up.iloc[i]; fl.iloc[i] = lo.iloc[i]
+    return fu.rename("ST_UPPER"), fl.rename("ST_LOWER"), uptrend.rename("ST_UPTREND"), a.rename("ATR")
 
 def on_balance_volume(df):
-    dirv = np.sign(df["Close"].diff()).fillna(0.0)
-    return (dirv * df["Volume"]).cumsum().rename("OBV")
+    return (np.sign(df["Close"].diff()).fillna(0.0) * df["Volume"]).cumsum().rename("OBV")
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
+    if df is None or df.empty: return pd.DataFrame()
     df = df.copy()
-
-    df["EMA20"] = ema(df["Close"], 20)
-    df["EMA50"] = ema(df["Close"], 50)
-    df["EMA200"] = ema(df["Close"], 200)
+    df["EMA20"] = ema(df["Close"], 20); df["EMA50"] = ema(df["Close"], 50); df["EMA200"] = ema(df["Close"], 200)
     df["RSI14"] = rsi(df["Close"], 14)
-    macd_line, sig, hist = macd(df["Close"])
-    df["MACD"] = macd_line; df["MACD_SIGNAL"] = sig; df["MACD_HIST"] = hist
-
-    bb_mid, bb_up, bb_low, bb_pctb = bollinger(df["Close"], 20, 2.0)
-    df["BB_MID"] = bb_mid; df["BB_UP"] = bb_up; df["BB_LOW"] = bb_low; df["BB_PCTB"] = bb_pctb
-
-    k, d = stochastic(df["High"], df["Low"], df["Close"], 14, 3)
-    df["STO_K"] = k; df["STO_D"] = d
-
-    plus_di, minus_di, adx_v = adx(df, 14)
-    df["PLUS_DI"] = plus_di; df["MINUS_DI"] = minus_di; df["ADX"] = adx_v
-
+    macd_line, sig, hist = macd(df["Close"]); df["MACD"] = macd_line; df["MACD_SIGNAL"] = sig; df["MACD_HIST"] = hist
+    bb_mid, bb_up, bb_lo, bb_pctb = bollinger(df["Close"], 20, 2.0)
+    df["BB_MID"] = bb_mid; df["BB_UP"] = bb_up; df["BB_LOW"] = bb_lo; df["BB_PCTB"] = bb_pctb
+    k, d = stochastic(df["High"], df["Low"], df["Close"], 14, 3); df["STO_K"] = k; df["STO_D"] = d
+    plus_di, minus_di, adx_v = adx(df, 14); df["PLUS_DI"] = plus_di; df["MINUS_DI"] = minus_di; df["ADX"] = adx_v
     df["MFI14"] = mfi(df, 14)
-
-    st_u, st_l, st_up, atr_v = supertrend(df, 10, 3.0)
-    df["ST_UPPER"] = st_u; df["ST_LOWER"] = st_l; df["ST_UPTREND"] = st_up; df["ATR14"] = atr_v
-
+    st_u, st_l, st_up, atr_v = supertrend(df, 10, 3.0); df["ST_UPPER"] = st_u; df["ST_LOWER"] = st_l; df["ST_UPTREND"] = st_up; df["ATR14"] = atr_v
     df["OBV"] = on_balance_volume(df)
     return df
 
 # -----------------------------
-# Scoring & success metrics
+# Score + success
 # -----------------------------
 def score_row(row):
-    s = 0
-    c = safe_float(row.get("Close"))
-    if safe_float(row.get("EMA20")) > safe_float(row.get("EMA50")): s += 1
-    if safe_float(row.get("EMA50")) > safe_float(row.get("EMA200")): s += 1
-    if safe_float(row.get("MACD")) > safe_float(row.get("MACD_SIGNAL")): s += 1
-    r = safe_float(row.get("RSI14"))
-    if 40 < r < 65: s += 1
-    if c > safe_float(row.get("BB_MID")): s += 1
-    pctb = safe_float(row.get("BB_PCTB"))
-    if 0.2 <= pctb <= 0.8: s += 1
-    if safe_float(row.get("STO_K")) > safe_float(row.get("STO_D")) and safe_float(row.get("STO_K")) < 80: s += 1
-    if safe_float(row.get("ADX")) > 20 and safe_float(row.get("PLUS_DI")) > safe_float(row.get("MINUS_DI")): s += 1
-    mfi14 = safe_float(row.get("MFI14"))
-    if 35 < mfi14 < 75: s += 1
-    if bool(row.get("ST_UPTREND")): s += 1
+    s = 0; c = float(row.get("Close", np.nan))
+    if float(row.get("EMA20", np.nan)) > float(row.get("EMA50", np.nan)): s += 1
+    if float(row.get("EMA50", np.nan)) > float(row.get("EMA200", np.nan)): s += 1
+    if float(row.get("MACD", np.nan)) > float(row.get("MACD_SIGNAL", np.nan)): s += 1
+    r = float(row.get("RSI14", np.nan));  s += 1 if 40 < r < 65 else 0
+    if c > float(row.get("BB_MID", np.nan)): s += 1
+    pctb = float(row.get("BB_PCTB", np.nan)); s += 1 if 0.2 <= pctb <= 0.8 else 0
+    if float(row.get("STO_K", np.nan)) > float(row.get("STO_D", np.nan)) and float(row.get("STO_K", np.nan)) < 80: s += 1
+    if float(row.get("ADX", np.nan)) > 20 and float(row.get("PLUS_DI", np.nan)) > float(row.get("MINUS_DI", np.nan)): s += 1
+    mfi14 = float(row.get("MFI14", np.nan)); s += 1 if 35 < mfi14 < 75 else 0
+    if bool(row.get("ST_UPTREND", False)): s += 1
     return s
 
 def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bars: int):
     try:
-        arr = close.values
-        n = len(arr)
+        arr = close.values; n = len(arr)
         if n < horizon_bars + 5: return np.nan, 0
         fmax = np.full(n, np.nan)
         for i in range(n - horizon_bars):
             fmax[i] = np.max(arr[i+1:i+1+horizon_bars])
         base = arr[:-horizon_bars]; mx = fmax[:-horizon_bars]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            fwd = (mx - base) / base
+        fwd = (mx - base) / base
         m = ~np.isnan(fwd)
         if m.sum() == 0: return np.nan, 0
-        hits = (fwd[m] >= target_pct).sum()
-        total = m.sum()
+        hits = (fwd[m] >= target_pct).sum(); total = m.sum()
         return 100.0 * hits / total, int(total)
     except Exception:
         return np.nan, 0
@@ -346,9 +292,9 @@ def blended_success_pct(hitrate_pct: float, score10: int) -> float:
     return (a + b) / 2.0
 
 # -----------------------------
-# Fast batched download
+# Downloads
 # -----------------------------
-@st.cache_data(ttl=15*60, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def download_batched(tickers, period, interval, batch_size=60):
     out = {}
     if not tickers: return out
@@ -361,11 +307,9 @@ def download_batched(tickers, period, interval, batch_size=60):
                 for sym in chunk:
                     if sym in df.columns.get_level_values(0):
                         sub = df[sym].dropna().copy()
-                        if not sub.empty and "Close" in sub:
-                            out[sym] = sub
+                        if not sub.empty and "Close" in sub: out[sym] = sub
             else:
-                if not df.empty and "Close" in df:
-                    out[chunk[0]] = df.dropna().copy()
+                if not df.empty and "Close" in df: out[chunk[0]] = df.dropna().copy()
         except Exception:
             pass
     return out
@@ -387,10 +331,7 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
     )
 
 def tradingview_earnings_widget(height: int = 500):
-    cfg = {
-        "width": "100%", "height": height, "colorTheme": "dark",
-        "isTransparent": False, "locale": "en", "market": "us"
-    }
+    cfg = {"width":"100%","height":height,"colorTheme":"dark","isTransparent":False,"locale":"en","market":"us"}
     html = f"""
     <div class="tradingview-widget-container tv-card">
       <div id="tv-earnings"></div>
@@ -402,7 +343,7 @@ def tradingview_earnings_widget(height: int = 500):
     components.html(html, height=height+8, scrolling=False)
 
 # =============================
-# Sidebar (Dark-only, globals)
+# Sidebar (globals)
 # =============================
 with st.sidebar:
     st.header("⚙️ Global Settings (Dark)")
@@ -421,7 +362,7 @@ UNIVERSE = build_universe(extra_tickers)
 left, right = st.columns([1.25, 1])
 
 # =============================
-# Left: Search & Chart (timeframe controlled on the chart)
+# Left: Search & Chart
 # =============================
 with left:
     st.subheader("🔎 Search & Chart")
@@ -431,7 +372,6 @@ with left:
 
     tradingview_iframe(symbol, "D", "6M", "Dark", height=520)
 
-    # Manual symbol analysis (daily)
     try:
         with st.spinner("Fetching chart data…"):
             df_m = yf.download(symbol, period="1y", interval="1d", auto_adjust=False, progress=False)
@@ -442,12 +382,10 @@ with left:
             last = ind.iloc[-1]
             price = float(last["Close"])
 
-            # Scores & success
             score10 = score_row(last)
             hit_rate, samples = forward_hit_rate_for_target(ind["Close"], st.session_state.target_gain/100, horizon_bars=st.session_state.horizon_bars)
             success_blend = blended_success_pct(hit_rate, score10)
 
-            # Signal badge
             if score10 >= 7 and (not np.isnan(success_blend) and success_blend >= 55):
                 signal_badge = '<span class="buy-badge">BUY</span>'
             elif score10 <= 3 and (not np.isnan(success_blend) and success_blend < 45):
@@ -455,7 +393,6 @@ with left:
             else:
                 signal_badge = '<span class="neutral-badge">NEUTRAL</span>'
 
-            # Targets & stops
             tgt = price * (1 + st.session_state.target_gain/100)
             stp_pct_val = price * (1 - st.session_state.stop_loss/100)
             atr_val = float(last["ATR14"]) if pd.notna(last["ATR14"]) else np.nan
@@ -494,7 +431,6 @@ with left:
 with right:
     st.subheader("🏆 Top 10 Scan")
 
-    # BLUE label above the timeframe select; collapse the default label to avoid duplicate
     st.markdown("<div class='blue-label'>Scan timeframe (Full mode only)</div>", unsafe_allow_html=True)
     speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True, label_visibility="visible")
     scan_tf = st.selectbox("", ["1m","5m","15m","30m","1h","1D"], index=5, label_visibility="collapsed")
@@ -516,17 +452,12 @@ with right:
 
         rows = []
         for sym, df in data_dict.items():
-            if df.empty or len(df) < 30:
-                continue
-            ind = compute_indicators(df)
-            last = ind.iloc[-1]
-            close = float(last["Close"])
-            if close <= 0:
-                continue
+            if df.empty or len(df) < 30: continue
+            ind = compute_indicators(df); last = ind.iloc[-1]
+            close = float(last["Close"]); if close <= 0: continue
 
             score10 = score_row(last)
-            hz = 20
-            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], st.session_state.target_gain/100, horizon_bars=hz)
+            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], st.session_state.target_gain/100, horizon_bars=20)
             success_blend = blended_success_pct(hit_rate, score10)
 
             shares = int(st.session_state.investment_amount // close) if close > 0 else 0
@@ -535,15 +466,10 @@ with right:
             potential_profit = (tgt_price - close) * shares
 
             rows.append({
-                "Symbol": sym,
-                "Price": round(close, 2),
-                "Score": score10,
+                "Symbol": sym, "Price": round(close, 2), "Score": score10,
                 "% Success": round(success_blend, 1) if not np.isnan(success_blend) else None,
-                "Buy": round(close, 2),
-                "Target": round(tgt_price, 2),
-                "Stop": round(stop_price, 2),
-                "Shares": shares,
-                "Potential $": round(potential_profit, 2),
+                "Buy": round(close, 2), "Target": round(tgt_price, 2), "Stop": round(stop_price, 2),
+                "Shares": shares, "Potential $": round(potential_profit, 2),
             })
 
         if not rows:
@@ -553,6 +479,7 @@ with right:
             st.dataframe(dfres, use_container_width=True)
 
             pick = st.selectbox("📊 View Top-10 chart:", dfres["Symbol"], index=0)
+            components.html("", height=0)  # ensure MutationObserver runs before next portal
             tradingview_iframe(pick, TF_MAP[scan_tf], RANGE_MAP[scan_tf], "Dark", height=420)
 
     st.markdown("### 📅 Earnings Calendar (TradingView, US)")
