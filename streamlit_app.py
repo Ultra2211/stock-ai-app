@@ -1,11 +1,11 @@
 # streamlit_app.py
-# S&P 500 scanner with:
-# - Always-on chart + search (no external timeframe control; use TradingView toolbar)
-# - Expanded indicators: EMA20/50/200, RSI, MACD, Bollinger, Stochastic, ADX(+DI/−DI), MFI, ATR, Supertrend(10,3)
-# - 10-point score + blended % Success (score + historical hit-rate)
-# - ATR-aware stop suggestion (alongside your % stop)
-# - Top 10 scan (batched), earnings calendar (TradingView), compact metrics
-# - True Light/Dark UI with correct text colors and blue accents
+# Dark-mode-only S&P 500 scanner with:
+# - Always-on TradingView chart + ticker search (timeframe controlled on the chart)
+# - Expanded indicators: EMA20/50/200, RSI, MACD, Bollinger, Stochastic, ADX(+DI/−DI), MFI, ATR, Supertrend(10,3), OBV
+# - 10-point composite score + blended % Success (hit-rate & score)
+# - ATR-aware stop suggestion (in addition to your % stop)
+# - Top-10 scan (batched), blue-labeled timeframe selector (right panel), visible spinner text
+# - TradingView earnings calendar (US)
 # Educational use only — not financial advice.
 
 from datetime import datetime, timezone
@@ -16,77 +16,72 @@ import streamlit.components.v1 as components
 import yfinance as yf
 
 # -----------------------------
-# Page / Theme
+# Page / Theme (Dark mode only)
 # -----------------------------
-st.set_page_config(page_title="S&P 500 Scanner Pro", page_icon="📈", layout="wide")
+st.set_page_config(page_title="S&P 500 Scanner Pro (Dark)", page_icon="📈", layout="wide")
 
-def inject_css(dark_enabled: bool):
-    base = """
+def inject_dark_css():
+    st.markdown("""
     <style>
-      :root { --blue:#2563eb; --blue-contrast:#ffffff; --good:#22c55e; --bad:#ef4444; }
+      :root { --bg:#0e1117; --panel:#161a23; --text:#ffffff; --muted:#c8c8c8; --blue:#2563eb; --blue-contrast:#ffffff;
+              --good:#22c55e; --bad:#ef4444; }
+
+      html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
+      [data-testid="stSidebar"] { background: var(--panel) !important; }
+      /* Force WHITE text globally in dark mode */
+      label, .stMarkdown, .stRadio, .stSlider, .stSelectbox, .stNumberInput, .stTextInput,
+      div, span, p { color: var(--text) !important; }
+
+      /* Inputs */
+      .stTextInput input, .stNumberInput input {
+        color: var(--text) !important; background: #11141a !important; border-color: #2a2f3a !important;
+      }
+
+      /* BaseWeb select (value container + arrow) */
+      div[data-baseweb="select"] > div {
+        background:#11141a !important; border-color:#2a2f3a !important; color: var(--text) !important;
+      }
+      div[data-baseweb="select"] * { color: var(--text) !important; }
+      div[data-baseweb="select"] svg { fill: var(--text) !important; }
+
+      /* Dropdown menu for select */
+      div[data-baseweb="menu"] { background:#0f1420 !important; border:1px solid #2a2f3a !important; }
+      div[data-baseweb="menu"] * { color:#ffffff !important; }
+      div[data-baseweb="option"] { background: transparent !important; }
+      div[data-baseweb="option"][aria-selected="true"] { background:#1d2330 !important; } /* dark highlight */
+
+      /* Spinner visibility */
+      div[data-testid="stSpinner"] *, div[role="alert"] * { color: var(--text) !important; }
+
       /* Compact metrics */
-      div[data-testid="stMetric"]{padding:.25rem .5rem}
-      div[data-testid="stMetricValue"]{font-size:1.2rem;line-height:1.2rem}
-      div[data-testid="stMetricLabel"]{font-size:.85rem}
+      div[data-testid="stMetric"] { padding:.25rem .5rem; }
+      div[data-testid="stMetricValue"] { font-size:1.2rem; line-height:1.2rem; }
+      div[data-testid="stMetricLabel"] { font-size:.85rem; }
+
       /* Badges */
-      .buy-badge{background:rgba(34,197,94,.15);color:#22c55e;padding:.35rem .6rem;border-radius:999px;font-weight:700;display:inline-block}
-      .sell-badge{background:rgba(239,68,68,.15);color:#ef4444;padding:.35rem .6rem;border-radius:999px;font-weight:700;display:inline-block}
-      .neutral-badge{background:rgba(37,99,235,.15);color:#2563eb;padding:.35rem .6rem;border-radius:999px;font-weight:700;display:inline-block}
-      .tv-card{border-radius:12px;overflow:hidden}
-      /* Blue primary button */
-      div.stButton>button{background:var(--blue)!important;color:var(--blue-contrast)!important;border:1px solid var(--blue)!important}
-      div.stButton>button:hover{filter:brightness(.95)}
+      .buy-badge { background: rgba(34,197,94,.15); color:#22c55e; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .sell-badge { background: rgba(239,68,68,.15); color:#ef4444; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .neutral-badge { background: rgba(37,99,235,.15); color:#2563eb; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+
+      .tv-card { border-radius:12px; overflow:hidden; }
+
+      /* Blue primary button (Run Scan) */
+      div.stButton > button {
+        background: var(--blue) !important;
+        color: var(--blue-contrast) !important;
+        border: 1px solid var(--blue) !important;
+      }
+      div.stButton > button:hover { filter: brightness(0.95); }
+
       /* Blue accent for ticker heading */
-      .ticker-accent{color:var(--blue);font-weight:700}
-      /* Tighter spacing */
-      .stTextInput,.stSelectbox,.stNumberInput,.stRadio,.stSlider{margin-bottom:.5rem}
+      .ticker-accent { color: var(--blue); font-weight:700; }
+
+      /* Tighter control spacing */
+      .stTextInput, .stSelectbox, .stNumberInput, .stRadio, .stSlider { margin-bottom:.5rem; }
     </style>
-    """
-    light = """
-    <style>
-      :root{--bg:#ffffff;--panel:#f6f7fb;--text:#000000;--muted:#374151}
-      html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;color:var(--text)!important}
-      [data-testid="stSidebar"]{background:var(--panel)!important}
-      /* Force BLACK text */
-      label,.stMarkdown,.stRadio,.stSlider,.stSelectbox,.stNumberInput,.stTextInput,div,span,p{color:var(--text)!important}
-      /* Inputs */
-      .stTextInput input,.stNumberInput input{color:var(--text)!important;background:#fff!important;border-color:#cbd5e1!important}
-      /* BaseWeb select (value + arrow) */
-      div[data-baseweb="select"]>div{background:#fff!important;border-color:#cbd5e1!important;color:var(--text)!important}
-      div[data-baseweb="select"] *{color:var(--text)!important}
-      div[data-baseweb="select"] svg{fill:var(--text)!important}
-      /* Dropdown menu */
-      div[data-baseweb="menu"]{background:#fff!important;border:1px solid #cbd5e1!important}
-      div[data-baseweb="menu"] *{color:#000!important}
-      div[data-baseweb="option"]{background:transparent!important}
-      div[data-baseweb="option"][aria-selected="true"]{background:#eff6ff!important}
-      /* Metrics */
-      div[data-testid="stMetricValue"],div[data-testid="stMetricLabel"]{color:var(--text)!important}
-    </style>
-    """
-    dark = """
-    <style>
-      :root{--bg:#0e1117;--panel:#161a23;--text:#fff;--muted:#c8c8c8}
-      html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;color:var(--text)!important}
-      [data-testid="stSidebar"]{background:var(--panel)!important}
-      /* Force WHITE text */
-      label,.stMarkdown,.stRadio,.stSlider,.stSelectbox,.stNumberInput,.stTextInput,div,span,p{color:var(--text)!important}
-      /* Inputs */
-      .stTextInput input,.stNumberInput input{color:var(--text)!important;background:#11141a!important;border-color:#2a2f3a!important}
-      /* BaseWeb select (value + arrow) */
-      div[data-baseweb="select"]>div{background:#11141a!important;border-color:#2a2f3a!important;color:var(--text)!important}
-      div[data-baseweb="select"] *{color:var(--text)!important}
-      div[data-baseweb="select"] svg{fill:var(--text)!important}
-      /* Dropdown menu */
-      div[data-baseweb="menu"]{background:#0f1420!important;border:1px solid #2a2f3a!important}
-      div[data-baseweb="menu"] *{color:#fff!important}
-      div[data-baseweb="option"]{background:transparent!important}
-      div[data-baseweb="option"][aria-selected="true"]{background:#1d2330!important}
-      /* Metrics */
-      div[data-testid="stMetricValue"],div[data-testid="stMetricLabel"]{color:var(--text)!important}
-    </style>
-    """
-    st.markdown(base + (dark if dark_enabled else light), unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+
+inject_dark_css()
 
 # -----------------------------
 # Small utils
@@ -107,7 +102,9 @@ def tv_symbol(sym: str) -> str:
 
 # Default initial chart settings (users change inside TradingView toolbar)
 DEFAULT_INTERVAL = "D"   # daily
-DEFAULT_RANGE = "6M"     # last 6 months
+DEFAULT_RANGE = "6M"     # 6 months (just an initial view)
+
+# For the Top‑10 mini chart (initial interval; user can still change inside the chart)
 TF_MAP = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D"}
 RANGE_MAP = {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M"}
 
@@ -227,7 +224,6 @@ def supertrend(df, period=10, mult=3.0):
         if i == 0:
             in_uptrend.iloc[i] = True
             continue
-        # carry forward bands
         if df["Close"].iloc[i-1] > final_upper.iloc[i-1]:
             in_uptrend.iloc[i] = True
         elif df["Close"].iloc[i-1] < final_lower.iloc[i-1]:
@@ -278,7 +274,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     st_u, st_l, st_up, atr_v = supertrend(df, 10, 3.0)
     df["ST_UPPER"] = st_u; df["ST_LOWER"] = st_l; df["ST_UPTREND"] = st_up; df["ATR14"] = atr_v
 
-    # OBV (optional; not in score but available)
+    # OBV
     df["OBV"] = on_balance_volume(df)
     return df
 
@@ -317,9 +313,7 @@ def score_row(row):
     return s
 
 def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bars: int):
-    """
-    % of times price reached +target_pct within next horizon_bars (same timeframe as input close).
-    """
+    """% of times price reached +target_pct within next horizon_bars on this timeframe."""
     try:
         arr = close.values
         n = len(arr)
@@ -339,10 +333,7 @@ def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bar
         return np.nan, 0
 
 def blended_success_pct(hitrate_pct: float, score10: int) -> float:
-    """
-    Blend historical hit-rate and indicator score into a single % Success.
-    50% weight to each for a balanced view.
-    """
+    """Blend historical hit-rate and indicator score (score/10*100) with 50/50 weight."""
     a = 0 if hitrate_pct is None or np.isnan(hitrate_pct) else float(hitrate_pct)
     b = max(0, min(10, int(score10))) * 10.0
     return (a + b) / 2.0
@@ -381,7 +372,7 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
         f"symbol={tv_symbol(symbol)}&interval={interval_code}&range={range_code}"
         "&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=1"
         "&toolbarbg=f1f3f6"
-        f"&theme={'dark' if theme=='Dark' else 'light'}"
+        f"&theme={'dark'}"
         "&style=1&timezone=Etc/UTC&withdateranges=1&allow_symbol_change=1"
         "&details=1&hideideas=1"
     )
@@ -390,11 +381,11 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
         height=height, scrolling=False
     )
 
-def tradingview_earnings_widget(theme: str, height: int = 500):
+def tradingview_earnings_widget(height: int = 500):
     cfg = {
         "width": "100%",
         "height": height,
-        "colorTheme": "dark" if theme == "Dark" else "light",
+        "colorTheme": "dark",
         "isTransparent": False,
         "locale": "en",
         "market": "us"
@@ -410,14 +401,10 @@ def tradingview_earnings_widget(theme: str, height: int = 500):
     components.html(html, height=height+8, scrolling=False)
 
 # =============================
-# Sidebar (Global)
+# Sidebar (Dark-only, globals)
 # =============================
 with st.sidebar:
-    st.header("⚙️ Global Settings")
-    dark_ui = st.toggle("🌙 Dark UI (true contrast)", value=True)
-    inject_css(dark_ui)
-    chart_theme = "Dark" if dark_ui else "Light"
-
+    st.header("⚙️ Global Settings (Dark)")
     extra_tickers = st.text_input("Force-include extra tickers (comma)", value="AMD, ENPH")
 
     st.markdown("---")
@@ -433,7 +420,7 @@ UNIVERSE = build_universe(extra_tickers)
 left, right = st.columns([1.25, 1])
 
 # =============================
-# Left: Always-On Chart & Search
+# Left: Always-On Chart & Search (no timeframe control here)
 # =============================
 with left:
     st.subheader("🔎 Search & Chart")
@@ -441,9 +428,10 @@ with left:
     dropdown_symbol = st.selectbox("…or pick from S&P 500", UNIVERSE, index=min(UNIVERSE.index("AAPL") if "AAPL" in UNIVERSE else 0, len(UNIVERSE)-1))
     symbol = manual_symbol or dropdown_symbol
 
-    tradingview_iframe(symbol, DEFAULT_INTERVAL, DEFAULT_RANGE, chart_theme, height=520)
+    # Users change timeframe using the TradingView toolbar
+    tradingview_iframe(symbol, DEFAULT_INTERVAL, DEFAULT_RANGE, "Dark", height=520)
 
-    # Symbol analysis (daily)
+    # Manual symbol analysis (daily)
     try:
         with st.spinner("Fetching chart data…"):
             df_m = yf.download(symbol, period="1y", interval="1d", auto_adjust=False, progress=False)
@@ -469,13 +457,13 @@ with left:
 
             # Targets & stops (both % and ATR-based suggestion)
             tgt = price * (1 + st.session_state.target_gain/100)
-            stp_pct = price * (1 - st.session_state.stop_loss/100)
+            stp_pct_val = price * (1 - st.session_state.stop_loss/100)
             atr_val = safe_float(last.get("ATR14"))
             stp_atr = price - 1.5 * atr_val if not np.isnan(atr_val) else np.nan
-            stp_use = stp_pct  # keep user % stop as binding; show ATR as suggestion
+            stp_use = stp_pct_val  # keep user % stop as binding; ATR suggestion shown separately
             rr = (tgt - price) / max(price - stp_use, 1e-9)
 
-            # Quick indicator snippets
+            # Snippets
             ema20 = safe_float(last.get("EMA20")); ema50 = safe_float(last.get("EMA50")); ema200 = safe_float(last.get("EMA200"))
             rsi14 = safe_float(last.get("RSI14")); macd_spread = safe_float(last.get("MACD")) - safe_float(last.get("MACD_SIGNAL"))
             pctb = safe_float(last.get("BB_PCTB"))
@@ -497,7 +485,7 @@ with left:
                 f"Stoch K/D {fmt(sto_k,1)}/{fmt(sto_d,1)} | ADX {fmt(adx_v,1)} (+DI {fmt(di_plus,1)} / −DI {fmt(di_minus,1)}) | "
                 f"MFI {fmt(mfi14,1)} | Supertrend {'UP ✅' if st_up else 'DOWN ❌'} | ATR {fmt(atr_val,2)}"
             )
-            st.caption(f"Stop (you set): ${fmt(stp_pct,2)} • ATR stop (1.5×): {('$'+fmt(stp_atr,2)) if not np.isnan(stp_atr) else '—'}")
+            st.caption(f"Stop (you set): ${fmt(stp_pct_val,2)} • ATR stop (1.5×): {('$'+fmt(stp_atr,2)) if not np.isnan(stp_atr) else '—'}")
     except Exception:
         st.warning("Unable to analyze this symbol.")
 
@@ -506,8 +494,12 @@ with left:
 # =============================
 with right:
     st.subheader("🏆 Top 10 Scan")
-    speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True)
-    scan_tf = st.selectbox("Scan timeframe (Full mode only)", ["1m","5m","15m","30m","1h","1D"], index=5)
+
+    # Blue label for timeframe selector: render our own label (blue), then hide the selectbox label
+    st.markdown("<div style='color:#2563eb; font-weight:700; margin-bottom:4px;'>Scan timeframe (Full mode only)</div>", unsafe_allow_html=True)
+    speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True, label_visibility="visible")
+    scan_tf = st.selectbox("", ["1m","5m","15m","30m","1h","1D"], index=5, label_visibility="collapsed")
+
     scan_tf_to_period = {
         "1m": ("1d", "1m"), "5m": ("5d", "5m"), "15m": ("5d", "15m"),
         "30m": ("1mo", "30m"), "1h": ("3mo", "1h"), "1D": ("1y", "1d"),
@@ -525,7 +517,7 @@ with right:
 
         rows = []
         for sym, df in data_dict.items():
-            if df.empty or len(df) < 30:  # need enough bars for indicators
+            if df.empty or len(df) < 30:
                 continue
             ind = compute_indicators(df)
             last = ind.iloc[-1]
@@ -539,7 +531,7 @@ with right:
             hit_rate, samples = forward_hit_rate_for_target(ind["Close"], st.session_state.target_gain/100, horizon_bars=hz)
             success_blend = blended_success_pct(hit_rate, score10)
 
-            # Position sizing and P/L (using your % stop; ATR suggestion not used in P/L)
+            # Position sizing and P/L (using your % stop)
             shares = int(st.session_state.investment_amount // close) if close > 0 else 0
             tgt_price = close * (1 + st.session_state.target_gain/100)
             stop_price = close * (1 - st.session_state.stop_loss/100)
@@ -564,14 +556,9 @@ with right:
             st.dataframe(dfres, use_container_width=True)
 
             pick = st.selectbox("📊 View Top-10 chart:", dfres["Symbol"], index=0)
-            tradingview_iframe(
-                pick, TF_MAP[scan_tf], RANGE_MAP[scan_tf],
-                "Dark" if dark_ui else "Light",
-                height=420
-            )
+            tradingview_iframe(pick, TF_MAP[scan_tf], RANGE_MAP[scan_tf], "Dark", height=420)
 
     st.markdown("### 📅 Earnings Calendar (TradingView, US)")
-    tradingview_earnings_widget("Dark" if dark_ui else "Light", height=500)
-
+    tradingview_earnings_widget(height=500)
 
 
