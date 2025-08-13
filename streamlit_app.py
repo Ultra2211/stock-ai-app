@@ -1,5 +1,5 @@
-## streamlit_app.py
-# Dark-mode-only S&P 500 scanner with bulletproof dark dropdowns (value + menu via CSS + MutationObserver JS).
+# streamlit_app.py
+# Dark-mode-only S&P 500 scanner with bulletproof BLACK dropdowns (value + menu via CSS + MutationObserver JS).
 # - TradingView chart + ticker search (timeframe controlled on the chart)
 # - Expanded indicators: EMA20/50/200, RSI, MACD, Bollinger, Stochastic, ADX(+DI/−DI), MFI, ATR, Supertrend(10,3), OBV
 # - 10-point score + blended % Success
@@ -17,40 +17,47 @@ import yfinance as yf
 # -----------------------------
 st.set_page_config(page_title="S&P 500 Scanner Pro (Dark)", page_icon="📈", layout="wide")
 
-def force_dark_selects():
-    """Injects CSS + JS to ensure ALL selectboxes and their menus are dark with white text."""
+def force_black_selects():
+    """Inject CSS + JS to ensure ALL selectboxes (value area + menu) are pure black background with white text."""
     components.html("""
     <style>
       :root {
         --bg:#0e1117; --panel:#161a23; --text:#ffffff; --muted:#c8c8c8;
         --blue:#2563eb; --blue-contrast:#ffffff;
-        --border:#2a2f3a; --input:#11141a; --menu:#0f1420; --menu-hover:#1d2330;
+        --border:#2a2f3a; --input:#000000; --menu:#000000; --menu-hover:#11141a;
+        --good:#22c55e; --bad:#ef4444;
       }
 
-      html, body { background: var(--bg) !important; color: var(--text) !important; }
-      /* Global text white */
-      * { color: var(--text); }
+      html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
+      [data-testid="stSidebar"] { background: var(--panel) !important; }
 
-      /* Inputs */
+      /* Force WHITE text globally */
+      label, .stMarkdown, .stRadio, .stSlider, .stSelectbox, .stNumberInput, .stTextInput,
+      div, span, p { color: var(--text) !important; }
+
+      /* Text/number inputs */
       .stTextInput input, .stNumberInput input {
-        background: var(--input) !important; color: var(--text) !important; border-color: var(--border) !important;
+        background: var(--input) !important; color: var(--text) !important; border: 1px solid var(--border) !important;
       }
 
-      /* ==== SELECT VALUE AREA (BaseWeb) ==== */
+      /* ====== SELECT VALUE AREA (BaseWeb + Streamlit wrappers) — BLACK background ====== */
+      /* Base container */
       div[data-baseweb="select"] > div {
-        background: var(--input) !important; color: var(--text) !important; border-color: var(--border) !important;
+        background: var(--input) !important; color: var(--text) !important; border: 1px solid var(--border) !important;
       }
+      /* Any descendant text/icons/placeholder */
       div[data-baseweb="select"] * { color: var(--text) !important; }
       div[data-baseweb="select"] input { color: var(--text) !important; caret-color: var(--text) !important; }
       div[data-baseweb="select"] svg { fill: var(--text) !important; }
 
-      /* Streamlit wrapper fallbacks */
+      /* Streamlit wrapper roles (covers collapsed labels and different DOM paths) */
       .stSelectbox [role="combobox"], .stSelectbox [role="button"] {
-        background: var(--input) !important; color: var(--text) !important; border-color: var(--border) !important;
+        background: var(--input) !important; color: var(--text) !important; border: 1px solid var(--border) !important;
       }
       .stSelectbox div { color: var(--text) !important; }
 
-      /* ==== MENU (BaseWeb portal) ==== */
+      /* ====== DROPDOWN MENU (portal) — BLACK background ====== */
+      /* BaseWeb menu portal */
       div[data-baseweb="menu"] {
         background: var(--menu) !important; border: 1px solid var(--border) !important;
       }
@@ -59,17 +66,18 @@ def force_dark_selects():
       div[data-baseweb="option"]:hover,
       div[data-baseweb="option"][aria-selected="true"] { background: var(--menu-hover) !important; }
 
-      /* ==== ARIA listbox fallback (some builds) ==== */
+      /* ARIA listbox fallback (some Streamlit versions) */
       [role="listbox"] { background: var(--menu) !important; border: 1px solid var(--border) !important; }
       [role="listbox"] * { color: var(--text) !important; }
       [role="option"] { background: transparent !important; color: var(--text) !important; }
       [role="option"]:hover, [role="option"][aria-selected="true"] { background: var(--menu-hover) !important; }
 
-      /* Metrics + buttons */
+      /* Buttons, metrics, badges */
       div[data-testid="stMetricValue"], div[data-testid="stMetricLabel"] { color: var(--text) !important; }
       div.stButton > button {
         background: var(--blue) !important; color: var(--blue-contrast) !important; border-color: var(--blue) !important;
       }
+      div.stButton > button:hover { filter: brightness(0.95); }
       .ticker-accent { color: var(--blue); font-weight:700; }
       .buy-badge{background:rgba(34,197,94,.15);color:#22c55e;padding:.35rem .6rem;border-radius:999px;font-weight:700;display:inline-block}
       .sell-badge{background:rgba(239,68,68,.15);color:#ef4444;padding:.35rem .6rem;border-radius:999px;font-weight:700;display:inline-block}
@@ -79,52 +87,46 @@ def force_dark_selects():
     </style>
 
     <script>
+      // MutationObserver: force-style any portaled menus/value containers that appear later
       (function(){
-        const darkifyMenu = (root) => {
-          const menus = root.querySelectorAll('div[data-baseweb="menu"], [role="listbox"]');
-          menus.forEach(m => {
-            m.style.background = '#0f1420';
+        const darkify = (root) => {
+          // Value containers
+          root.querySelectorAll('div[data-baseweb="select"] > div, .stSelectbox [role="combobox"], .stSelectbox [role="button"]').forEach(n => {
+            n.style.background = '#000';
+            n.style.color = '#fff';
+            n.style.border = '1px solid #2a2f3a';
+          });
+          // Menus (BaseWeb + ARIA fallback)
+          root.querySelectorAll('div[data-baseweb="menu"], [role="listbox"]').forEach(m => {
+            m.style.background = '#000';
             m.style.border = '1px solid #2a2f3a';
-            const all = m.querySelectorAll('*');
-            all.forEach(n => { n.style.color = '#fff'; });
-            const opts = m.querySelectorAll('div[data-baseweb="option"], [role="option"]');
-            opts.forEach(o => {
-              o.addEventListener('mouseenter', () => { o.style.background = '#1d2330'; });
+            m.querySelectorAll('*').forEach(x => x.style.color = '#fff');
+            m.querySelectorAll('div[data-baseweb="option"], [role="option"]').forEach(o => {
+              o.addEventListener('mouseenter', () => { o.style.background = '#11141a'; });
               o.addEventListener('mouseleave', () => { o.style.background = 'transparent'; });
             });
           });
         };
-
         // Initial pass
-        darkifyMenu(document);
-
-        // Observe the whole document for portaled menus appearing later
-        const obs = new MutationObserver((mutations) => {
-          mutations.forEach(m => {
-            m.addedNodes && m.addedNodes.forEach(n => {
-              try {
-                if (!(n instanceof HTMLElement)) return;
-                if (n.querySelector) darkifyMenu(n);
-                // Also re-style value containers that may re-render
-                if (n.matches && n.matches('div[data-baseweb="select"] > div')) {
-                  n.style.background = '#11141a';
-                  n.style.color = '#fff';
-                  n.style.borderColor = '#2a2f3a';
-                }
-              } catch(e){}
+        darkify(document);
+        // Observe DOM for portals
+        const obs = new MutationObserver(muts => {
+          for (const m of muts) {
+            if (!m.addedNodes) continue;
+            m.addedNodes.forEach(n => {
+              if (n.nodeType === 1) { darkify(n); }
             });
-          });
+          }
         });
         obs.observe(document.body, { childList: true, subtree: true });
       })();
     </script>
     """, height=0)
-    # height=0 keeps it invisible but runs CSS/JS
 
-force_dark_selects()
+force_black_selects()
 
 # -----------------------------
-# Utils
+# Helpers
 # -----------------------------
 def fmt(x, digits=2, default="—"):
     try:
@@ -147,8 +149,10 @@ RANGE_MAP = {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M"}
 # -----------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def sp500_from_yf():
-    try: return sorted(list(set(yf.tickers_sp500())))
-    except Exception: return []
+    try:
+        return sorted(list(set(yf.tickers_sp500())))
+    except Exception:
+        return []
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def sp500_from_wiki_if_available():
@@ -162,7 +166,8 @@ def sp500_from_wiki_if_available():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def build_universe(extra_csv: str):
-    base = set(sp500_from_yf()); wiki = set(sp500_from_wiki_if_available())
+    base = set(sp500_from_yf())
+    wiki = set(sp500_from_wiki_if_available())
     universe = sorted(list(base.union(wiki)))
     if not universe:
         universe = ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM"]
@@ -225,7 +230,9 @@ def supertrend(df, period=10, mult=3.0):
     fu, fl = up.copy(), lo.copy()
     uptrend = pd.Series(index=df.index, dtype=bool)
     for i in range(len(df)):
-        if i == 0: uptrend.iloc[i] = True; continue
+        if i == 0:
+            uptrend.iloc[i] = True
+            continue
         if df["Close"].iloc[i-1] > fu.iloc[i-1]: uptrend.iloc[i] = True
         elif df["Close"].iloc[i-1] < fl.iloc[i-1]: uptrend.iloc[i] = False
         else:
@@ -257,7 +264,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # Score + success
 # -----------------------------
 def score_row(row):
-    s = 0; c = float(row.get("Close", np.nan))
+    s = 0
+    c = float(row.get("Close", np.nan))
     if float(row.get("EMA20", np.nan)) > float(row.get("EMA50", np.nan)): s += 1
     if float(row.get("EMA50", np.nan)) > float(row.get("EMA200", np.nan)): s += 1
     if float(row.get("MACD", np.nan)) > float(row.get("MACD_SIGNAL", np.nan)): s += 1
@@ -278,7 +286,8 @@ def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bar
         for i in range(n - horizon_bars):
             fmax[i] = np.max(arr[i+1:i+1+horizon_bars])
         base = arr[:-horizon_bars]; mx = fmax[:-horizon_bars]
-        fwd = (mx - base) / base
+        with np.errstate(divide="ignore", invalid="ignore"):
+            fwd = (mx - base) / (base + 1e-12)
         m = ~np.isnan(fwd)
         if m.sum() == 0: return np.nan, 0
         hits = (fwd[m] >= target_pct).sum(); total = m.sum()
@@ -431,6 +440,7 @@ with left:
 with right:
     st.subheader("🏆 Top 10 Scan")
 
+    # BLUE label above the timeframe select; collapse the default label to avoid duplicate
     st.markdown("<div class='blue-label'>Scan timeframe (Full mode only)</div>", unsafe_allow_html=True)
     speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True, label_visibility="visible")
     scan_tf = st.selectbox("", ["1m","5m","15m","30m","1h","1D"], index=5, label_visibility="collapsed")
@@ -452,9 +462,13 @@ with right:
 
         rows = []
         for sym, df in data_dict.items():
-            if df.empty or len(df) < 30: continue
-            ind = compute_indicators(df); last = ind.iloc[-1]
-            close = float(last["Close"]); if close <= 0: continue
+            if df.empty or len(df) < 30:
+                continue
+            ind = compute_indicators(df)
+            last = ind.iloc[-1]
+            close = float(last["Close"])
+            if close <= 0:
+                continue
 
             score10 = score_row(last)
             hit_rate, samples = forward_hit_rate_for_target(ind["Close"], st.session_state.target_gain/100, horizon_bars=20)
@@ -466,10 +480,15 @@ with right:
             potential_profit = (tgt_price - close) * shares
 
             rows.append({
-                "Symbol": sym, "Price": round(close, 2), "Score": score10,
+                "Symbol": sym,
+                "Price": round(close, 2),
+                "Score": score10,
                 "% Success": round(success_blend, 1) if not np.isnan(success_blend) else None,
-                "Buy": round(close, 2), "Target": round(tgt_price, 2), "Stop": round(stop_price, 2),
-                "Shares": shares, "Potential $": round(potential_profit, 2),
+                "Buy": round(close, 2),
+                "Target": round(tgt_price, 2),
+                "Stop": round(stop_price, 2),
+                "Shares": shares,
+                "Potential $": round(potential_profit, 2),
             })
 
         if not rows:
@@ -479,7 +498,8 @@ with right:
             st.dataframe(dfres, use_container_width=True)
 
             pick = st.selectbox("📊 View Top-10 chart:", dfres["Symbol"], index=0)
-            components.html("", height=0)  # ensure MutationObserver runs before next portal
+            # Ensure MutationObserver has already initialized before a new portal opens
+            components.html("", height=0)
             tradingview_iframe(pick, TF_MAP[scan_tf], RANGE_MAP[scan_tf], "Dark", height=420)
 
     st.markdown("### 📅 Earnings Calendar (TradingView, US)")
