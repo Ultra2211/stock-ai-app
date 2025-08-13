@@ -1,6 +1,6 @@
 # streamlit_app.py
-# Fast batched S&P 500 scanner with TradingView chart, indicators, investment sizing,
-# % success hit rate, earnings, and dividends.
+# Full S&P 500 (505) access + manual tickers (AMD, ENPH, etc.), fast batched scan,
+# TradingView chart, indicators, % success, investment sizing, earnings/dividends.
 # Educational use only — not financial advice.
 
 from datetime import datetime, timezone
@@ -15,7 +15,7 @@ import yfinance as yf
 # -----------------------------
 st.set_page_config(page_title="S&P 500 Scanner Pro", page_icon="📈", layout="wide")
 st.title("📈 S&P 500 Scanner — Chart, Top 10, % Success & Earnings/Dividends")
-st.caption("Fast batched scanning with interactive TradingView charts. Data via Yahoo Finance; charts by TradingView. Not financial advice.")
+st.caption("Full-universe scan with manual tickers (AMD, ENPH, etc.). Fast batched downloads. Data via Yahoo Finance; charts by TradingView. Not financial advice.")
 
 # -----------------------------
 # Small utils
@@ -34,17 +34,54 @@ def fmt(x, digits=2, default="—"):
     except Exception:
         return default
 
+def tv_symbol(sym: str) -> str:
+    # TradingView uses dots for class tickers (e.g., BRK.B)
+    return sym.replace("-", ".")
+
+# -----------------------------
+# Universe builders
+# -----------------------------
 @st.cache_data(ttl=60*60, show_spinner=False)
-def get_sp500_symbols():
+def sp500_from_yf():
     try:
         syms = yf.tickers_sp500()
         return sorted(list(set(syms)))
     except Exception:
-        return sorted([
+        return []
+
+@st.cache_data(ttl=60*60, show_spinner=False)
+def sp500_from_wiki_if_available():
+    # If lxml is installed, we can merge Wikipedia (usually most complete)
+    try:
+        import lxml  # noqa: F401
+        tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+        df = tables[0]
+        # Normalize Berkshire etc. to Yahoo style with '-'
+        syms = df["Symbol"].astype(str).str.replace(r"\.", "-", regex=True).tolist()
+        return sorted(list(set(syms)))
+    except Exception:
+        return []
+
+def build_universe(extra_csv: str):
+    base = set(sp500_from_yf())
+    wiki = set(sp500_from_wiki_if_available())
+    universe = sorted(list(base.union(wiki)))
+    # Fallback subset if both are empty
+    if not universe:
+        universe = sorted([
             "AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM",
             "V","UNH","XOM","JNJ","PG","LLY","HD","MA","COST","BAC"
         ])
+    # Merge forced extra symbols (typed by user)
+    extras = []
+    if extra_csv:
+        extras = [s.strip().upper() for s in extra_csv.split(",") if s.strip()]
+    universe = sorted(list(set(universe + extras)))
+    return universe
 
+# -----------------------------
+# Indicators & scoring
+# -----------------------------
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
     gain = (delta.clip(lower=0)).rolling(period).mean()
@@ -90,6 +127,14 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def score_row(row):
+    """
+    Score (0..5):
+    +1 EMA20 > EMA50
+    +1 MACD > Signal
+    +1 35 < RSI < 70
+    +1 Close > BB_MID
+    +1 0.2 <= BB_%B <= 0.8
+    """
     score = 0
     if safe_float(row.get("EMA20")) > safe_float(row.get("EMA50")): score += 1
     if safe_float(row.get("MACD")) > safe_float(row.get("MACD_SIGNAL")): score += 1
@@ -101,6 +146,9 @@ def score_row(row):
     return score
 
 def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bars: int):
+    """
+    % of times price reached +target_pct within next horizon_bars on this timeframe.
+    """
     try:
         arr = close.values
         n = len(arr)
@@ -113,15 +161,18 @@ def forward_hit_rate_for_target(close: pd.Series, target_pct: float, horizon_bar
         mx = fmax[:-horizon_bars]
         with np.errstate(divide="ignore", invalid="ignore"):
             fwd = (mx - base) / base
-        mask = ~np.isnan(fwd)
-        if mask.sum() == 0:
+        m = ~np.isnan(fwd)
+        if m.sum() == 0:
             return np.nan, 0
-        hits = (fwd[mask] >= target_pct).sum()
-        total = mask.sum()
+        hits = (fwd[m] >= target_pct).sum()
+        total = m.sum()
         return 100.0 * hits / total, int(total)
     except Exception:
         return np.nan, 0
 
+# -----------------------------
+# Fast batched download
+# -----------------------------
 @st.cache_data(ttl=15*60, show_spinner=False)
 def download_batched(tickers, period, interval, batch_size=60):
     out = {}
@@ -145,10 +196,13 @@ def download_batched(tickers, period, interval, batch_size=60):
             pass
     return out
 
+# -----------------------------
+# TradingView embed
+# -----------------------------
 def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: str, height: int = 560):
     src = (
         "https://s.tradingview.com/widgetembed/?"
-        f"symbol={symbol}&interval={interval_code}&range={range_code}"
+        f"symbol={tv_symbol(symbol)}&interval={interval_code}&range={range_code}"
         "&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=1"
         "&toolbarbg=f1f3f6"
         f"&theme={'dark' if theme=='Dark' else 'light'}"
@@ -163,23 +217,70 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
 # -----------------------------
 # UI Controls
 # -----------------------------
-sp500 = get_sp500_symbols()
+with st.sidebar:
+    st.header("⚙️ Global Settings")
+    extra_tickers = st.text_input("Force‑include extra tickers (comma)", value="AMD, ENPH")
+    speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True)
+    chart_timeframe = st.selectbox("Chart timeframe", ["1m","5m","15m","30m","1h","1D","1W","1M","3M","6M"], index=5)
+    tf_map = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D","1W":"W","1M":"M","3M":"M","6M":"M"}
+    range_map = {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M","1W":"1Y","1M":"5Y","3M":"5Y","6M":"ALL"}
+    theme = st.radio("Chart theme", ["Light","Dark"], index=0, horizontal=True)
+    st.markdown("---")
+    investment_amount = st.number_input("Default investment amount ($)", 100, 100000, 1000, 100)
+    target_gain = st.number_input("Target gain (%)", 1.0, 50.0, 10.0, 0.5)
+    stop_loss = st.number_input("Stop loss (%)", 1.0, 30.0, 5.0, 0.5)
+
+# Build universe with extras merged (so AMD/ENPH are guaranteed present)
+UNIVERSE = build_universe(extra_tickers)
+
 left, right = st.columns([1.25, 1])
 
 # ----- Left: Chart & Search -----
 with left:
     st.subheader("🔎 Always-On Chart & Search")
-    timeframe = st.selectbox("Chart timeframe", ["1m","5m","15m","30m","1h","1D","1W","1M","3M","6M"], index=5)
-    tf_map = {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D","1W":"W","1M":"M","3M":"M","6M":"M"}
-    range_map = {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M","1W":"1Y","1M":"5Y","3M":"5Y","6M":"ALL"}
-    theme = st.radio("Chart theme", ["Light","Dark"], index=0, horizontal=True)
-    symbol = st.selectbox("S&P 500 ticker", sp500, index=0)
-    tradingview_iframe(symbol, tf_map[timeframe], range_map[timeframe], theme, height=560)
+
+    # Free text input (ANY symbol: AMD, ENPH, etc.)
+    manual_symbol = st.text_input("Type a ticker and press Enter", value="AMD").strip().upper()
+    # Also provide a searchable dropdown over the full universe
+    dropdown_symbol = st.selectbox("…or pick from S&P 500", UNIVERSE, index=min(UNIVERSE.index("AAPL") if "AAPL" in UNIVERSE else 0, len(UNIVERSE)-1))
+    current_symbol = manual_symbol or dropdown_symbol
+
+    tradingview_iframe(current_symbol, tf_map[chart_timeframe], range_map[chart_timeframe], theme, height=560)
+
+    # Quick daily metrics for the chosen symbol
+    try:
+        df_m = yf.download(current_symbol, period="1y", interval="1d", auto_adjust=False, progress=False)
+        if df_m is None or df_m.empty:
+            st.warning("No Yahoo data for this symbol.")
+        else:
+            ind_m = compute_indicators(df_m)
+            last = ind_m.iloc[-1]
+            price = safe_float(last.get("Close"))
+            ema20 = safe_float(last.get("EMA20"))
+            ema50 = safe_float(last.get("EMA50"))
+            ema200 = safe_float(last.get("EMA200"))
+            rsi14 = safe_float(last.get("RSI14"))
+            macd_val = safe_float(last.get("MACD"))
+            macd_sig = safe_float(last.get("MACD_SIGNAL"))
+            bb_mid = safe_float(last.get("BB_MID"))
+            bb_up = safe_float(last.get("BB_UP"))
+            bb_low = safe_float(last.get("BB_LOW"))
+            pctb = safe_float(last.get("BB_PCTB"))
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Price", f"${fmt(price,2)}")
+            c2.metric("RSI(14)", fmt(rsi14,1))
+            c3.metric("EMA20>EMA50", "Yes ✅" if ema20 > ema50 else "No ❌")
+            c4.metric("EMA50>EMA200", "Yes ✅" if ema50 > ema200 else "No ❌")
+            c5.metric("MACD−Signal", fmt(macd_val - macd_sig, 3))
+            st.write(f"**Bollinger(20,2):** Mid {fmt(bb_mid,2)}, Upper {fmt(bb_up,2)}, Lower {fmt(bb_low,2)}, %B {fmt(pctb,2)}")
+    except Exception:
+        st.warning("Unable to load quick metrics for this symbol.")
 
 # ----- Right: Scan -----
 with right:
     st.subheader("🏆 Top 10 Scan")
-    speed_mode = st.radio("Speed mode", ["Quick (Daily)","Full (Intraday)"], index=0, horizontal=True)
+
     scan_tf = st.selectbox("Scan timeframe (Full mode only)", ["1m","5m","15m","30m","1h","1D"], index=5)
     scan_tf_to_period = {
         "1m": ("1d", "1m"),
@@ -189,16 +290,16 @@ with right:
         "1h": ("3mo", "1h"),
         "1D": ("1y", "1d"),
     }
-    investment_amount = st.number_input("Investment amount ($)", 100, 100000, 1000, 100)
-    target_gain = st.number_input("Target gain (%)", 1.0, 50.0, 10.0, 0.5)
-    stop_loss = st.number_input("Stop loss (%)", 1.0, 30.0, 5.0, 0.5)
-    max_scan = st.slider("Max symbols to scan", 50, 505, 200, 25)
+    max_scan = st.slider("Max symbols to scan", 50, 505, 505, 5)  # default now full 505
     run = st.button("🚀 Run Scan")
 
     if run:
         period, interval = scan_tf_to_period["1D"] if speed_mode.startswith("Quick") else scan_tf_to_period[scan_tf]
-        syms = sp500[:max_scan]
-        data_dict = download_batched(syms, period, interval)
+        symbols = UNIVERSE[:max_scan]
+
+        st.info(f"Scanning {len(symbols)} symbols on {interval}… (batched)")
+        data_dict = download_batched(symbols, period, interval)
+
         rows, todays_earnings, todays_divs = [], [], []
         today = datetime.now(timezone.utc).date()
 
@@ -208,12 +309,20 @@ with right:
             ind = compute_indicators(df)
             last = ind.iloc[-1]
             close = safe_float(last.get("Close"))
+            if np.isnan(close) or close <= 0:
+                continue
             score = score_row(last)
-            shares = investment_amount / close if close > 0 else 0
+
+            # Investment sizing & P/L
+            shares = int(investment_amount // close) if close > 0 else 0
             tgt_price = close * (1 + target_gain/100)
             stop_price = close * (1 - stop_loss/100)
             potential_profit = (tgt_price - close) * shares
-            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], target_gain/100, horizon_bars=20)
+
+            # % Success (hit rate) on this timeframe
+            # horizon_bars ~ 20 bars by default (~1 month on daily; ~100 min on 5m)
+            horizon_bars = 20 if interval != "1m" else 60
+            hit_rate, samples = forward_hit_rate_for_target(ind["Close"], target_gain/100, horizon_bars=horizon_bars)
 
             rows.append({
                 "Symbol": sym,
@@ -222,12 +331,13 @@ with right:
                 "Buy": round(close, 2),
                 "Target": round(tgt_price, 2),
                 "Stop": round(stop_price, 2),
-                "Shares": int(shares),
+                "Shares": shares,
                 "Potential $": round(potential_profit, 2),
                 "% Success": round(hit_rate, 1) if not np.isnan(hit_rate) else None,
                 "Samples": samples
             })
 
+            # Earnings/Dividends today (best-effort)
             try:
                 tk = yf.Ticker(sym)
                 cal = getattr(tk, "calendar", None)
@@ -247,17 +357,17 @@ with right:
                 pass
 
         if not rows:
-            st.warning("No candidates found.")
+            st.warning("No candidates collected. Try Quick (Daily) mode or reduce timeframe strictness.")
         else:
             dfres = pd.DataFrame(rows).sort_values(["Score","% Success"], ascending=[False, False]).head(10).reset_index(drop=True)
             st.dataframe(dfres, use_container_width=True)
 
-            pick = st.selectbox("📊 View Top-10 chart:", dfres["Symbol"], index=0)
-            tradingview_iframe(pick, tf_map[timeframe], range_map[timeframe], theme, height=420)
+            pick = st.selectbox("📊 View Top‑10 chart:", dfres["Symbol"], index=0)
+            tradingview_iframe(pick, tf_map[chart_timeframe], range_map[chart_timeframe], theme, height=420)
 
         st.markdown("### 📅 Earnings Today")
-        st.dataframe(pd.DataFrame(todays_earnings) if todays_earnings else pd.DataFrame([{"Symbol":"None"}]))
+        st.dataframe(pd.DataFrame(todays_earnings) if todays_earnings else pd.DataFrame([{"Symbol":"—"}]), use_container_width=True)
 
         st.markdown("### 💸 Dividends Today")
-        st.dataframe(pd.DataFrame(todays_divs) if todays_divs else pd.DataFrame([{"Symbol":"None"}]))
+        st.dataframe(pd.DataFrame(todays_divs) if todays_divs else pd.DataFrame([{"Symbol":"—"}]), use_container_width=True)
 
