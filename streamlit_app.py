@@ -3,7 +3,7 @@
 # - Always-on chart + search
 # - BUY/NEUTRAL/SELL + % success for typed ticker
 # - Top 10 scan (batched), indicators (RSI, MACD, EMA20/50/200, Bollinger)
-# - True Light/Dark UI with correct text colors (black in light, white in dark)
+# - True Light/Dark UI with correct text colors
 # - Styled blue Run Scan button and blue ticker title accent
 # - Compact metrics
 # - TradingView earnings calendar (US)
@@ -22,7 +22,7 @@ import yfinance as yf
 st.set_page_config(page_title="S&P 500 Scanner Pro", page_icon="📈", layout="wide")
 
 def inject_css(dark_enabled: bool):
-    # Base styles (shared) + light/dark overrides
+    # Base styles (shared) + light/dark overrides, with explicit BaseWeb select/menu theming
     base = """
     <style>
       :root {
@@ -49,22 +49,18 @@ def inject_css(dark_enabled: bool):
         color: var(--blue-contrast) !important;
         border: 1px solid var(--blue) !important;
       }
-      div.stButton > button:hover {
-        filter: brightness(0.95);
-      }
+      div.stButton > button:hover { filter: brightness(0.95); }
 
       /* Blue accent for ticker heading */
       .ticker-accent { color: var(--blue); font-weight:700; }
 
-      /* Make input/select spacing a bit tighter */
+      /* Tighter control spacing */
       .stTextInput, .stSelectbox, .stNumberInput, .stRadio, .stSlider { margin-bottom:.5rem; }
     </style>
     """
     light = """
     <style>
-      :root {
-        --bg:#ffffff; --panel:#f6f7fb; --text:#000000; --muted:#374151;
-      }
+      :root { --bg:#ffffff; --panel:#f6f7fb; --text:#000000; --muted:#374151; }
       html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
       [data-testid="stSidebar"] { background: var(--panel) !important; }
 
@@ -72,23 +68,31 @@ def inject_css(dark_enabled: bool):
       label, .stMarkdown, .stRadio, .stSlider, .stSelectbox, .stNumberInput, .stTextInput,
       div, span, p { color: var(--text) !important; }
 
-      /* Inputs / selects background & borders */
+      /* Inputs / selects */
       .stTextInput input, .stNumberInput input {
         color: var(--text) !important; background: #ffffff !important; border-color: #cbd5e1 !important;
       }
-      /* BaseWeb select (Streamlit uses BaseWeb) */
-      div[data-baseweb="select"] > div { background:#ffffff !important; border-color:#cbd5e1 !important; }
-      div[role="combobox"] * { color: var(--text) !important; }
 
-      /* Metric label/value to black */
+      /* BaseWeb select (value container + arrow) */
+      div[data-baseweb="select"] > div {
+        background:#ffffff !important; border-color:#cbd5e1 !important; color: var(--text) !important;
+      }
+      div[data-baseweb="select"] * { color: var(--text) !important; }
+      div[data-baseweb="select"] svg { fill: var(--text) !important; }
+
+      /* Dropdown menu */
+      div[data-baseweb="menu"] { background:#ffffff !important; border:1px solid #cbd5e1 !important; }
+      div[data-baseweb="menu"] * { color:#000000 !important; }
+      div[data-baseweb="option"] { background: transparent !important; }
+      div[data-baseweb="option"][aria-selected="true"] { background:#eff6ff !important; } /* light blue highlight */
+
+      /* Metrics */
       div[data-testid="stMetricValue"], div[data-testid="stMetricLabel"] { color: var(--text) !important; }
     </style>
     """
     dark = """
     <style>
-      :root {
-        --bg:#0e1117; --panel:#161a23; --text:#ffffff; --muted:#c8c8c8;
-      }
+      :root { --bg:#0e1117; --panel:#161a23; --text:#ffffff; --muted:#c8c8c8; }
       html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
       [data-testid="stSidebar"] { background: var(--panel) !important; }
 
@@ -96,14 +100,25 @@ def inject_css(dark_enabled: bool):
       label, .stMarkdown, .stRadio, .stSlider, .stSelectbox, .stNumberInput, .stTextInput,
       div, span, p { color: var(--text) !important; }
 
-      /* Inputs / selects background & borders */
+      /* Inputs */
       .stTextInput input, .stNumberInput input {
         color: var(--text) !important; background: #11141a !important; border-color: #2a2f3a !important;
       }
-      div[data-baseweb="select"] > div { background:#11141a !important; border-color:#2a2f3a !important; }
-      div[role="combobox"] * { color: var(--text) !important; }
 
-      /* Metric label/value to white */
+      /* BaseWeb select (value container + arrow) */
+      div[data-baseweb="select"] > div {
+        background:#11141a !important; border-color:#2a2f3a !important; color: var(--text) !important;
+      }
+      div[data-baseweb="select"] * { color: var(--text) !important; }
+      div[data-baseweb="select"] svg { fill: var(--text) !important; }
+
+      /* Dropdown menu for select */
+      div[data-baseweb="menu"] { background:#0f1420 !important; border:1px solid #2a2f3a !important; }
+      div[data-baseweb="menu"] * { color:#ffffff !important; }
+      div[data-baseweb="option"] { background: transparent !important; }
+      div[data-baseweb="option"][aria-selected="true"] { background:#1d2330 !important; } /* dark highlight */
+
+      /* Metrics */
       div[data-testid="stMetricValue"], div[data-testid="stMetricLabel"] { color: var(--text) !important; }
     </style>
     """
@@ -318,8 +333,18 @@ with st.sidebar:
     horizon_bars = st.slider("Bars to check for target hit (horizon)", 5, 60, 20, 1, key="horizon_bars",
                              help="Used for % success (hit-rate).")
 
-# Build universe
-UNIVERSE = build_universe(extra_tickers)
+# Build universe helpers
+@st.cache_data(ttl=60*60, show_spinner=False)
+def build_universe_cached(extra_csv: str):
+    base = set(sp500_from_yf())
+    wiki = set(sp500_from_wiki_if_available())
+    universe = sorted(list(base.union(wiki)))
+    if not universe:
+        universe = sorted(["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM"])
+    extras = [s.strip().upper() for s in extra_csv.split(",") if s.strip()] if extra_csv else []
+    return sorted(list(set(universe + extras)))
+
+UNIVERSE = build_universe_cached(extra_tickers)
 
 left, right = st.columns([1.25, 1])
 
