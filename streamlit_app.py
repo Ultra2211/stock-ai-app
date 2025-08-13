@@ -1,6 +1,6 @@
 # streamlit_app.py
 # S&P 500 scanner with:
-# - Always-on chart + "live search" runner
+# - Always-on chart + "live search" runner that animates ONLY while loading
 # - Simple BUY/NEUTRAL/SELL + % success for typed ticker
 # - Top 10 scan (batched, fast), indicators, earnings & dividends
 # - Dark UI toggle
@@ -18,23 +18,36 @@ import yfinance as yf
 # -----------------------------
 st.set_page_config(page_title="S&P 500 Scanner Pro", page_icon="📈", layout="wide")
 
+# Session state flags for animated runner
+if "is_fetching" not in st.session_state:
+    st.session_state.is_fetching = False
+if "is_scanning" not in st.session_state:
+    st.session_state.is_scanning = False
+if "last_symbol" not in st.session_state:
+    st.session_state.last_symbol = ""
+
 def inject_dark_css(enabled: bool):
-    if not enabled:
-        return
-    st.markdown("""
+    base_css = """
     <style>
-      :root { --bg:#0e1117; --panel:#161a23; --text:#e6e6e6; --muted:#9aa0a6; --accent:#5e8bff; --good:#22c55e; --bad:#ef4444; }
+      :root { --bg:#ffffff; --panel:#f6f7fb; --text:#0f172a; --muted:#64748b; --accent:#3b82f6; --good:#22c55e; --bad:#ef4444; }
       html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
       [data-testid="stSidebar"] { background: var(--panel) !important; }
       .stMetric label, .stMarkdown, .stSelectbox, .stTextInput, .stNumberInput, .stRadio, .stSlider { color: var(--text) !important; }
       .buy-badge { background: rgba(34,197,94,.15); color: #22c55e; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
       .sell-badge { background: rgba(239,68,68,.15); color:#ef4444; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
-      .neutral-badge { background: rgba(94,139,255,.15); color:#5e8bff; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
-      .runner { font-size:1.1rem; display:inline-block; margin-left:.4rem; position:relative; animation: run 1.2s linear infinite; }
-      @keyframes run { 0%{transform:translateX(0)} 50%{transform:translateX(6px)} 100%{transform:translateX(0)} }
+      .neutral-badge { background: rgba(59,130,246,.15); color:#3b82f6; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .runner { font-size:1.15rem; display:inline-block; margin-left:.4rem; position:relative; }
+      .runner.run { animation: run 1.2s linear infinite; }
+      @keyframes run { 0%{transform:translateX(0)} 50%{transform:translateX(8px)} 100%{transform:translateX(0)} }
       .small { color: var(--muted); font-size:.9rem; }
     </style>
-    """, unsafe_allow_html=True)
+    """
+    dark_css = """
+    <style>
+      :root { --bg:#0e1117; --panel:#161a23; --text:#e6e6e6; --muted:#9aa0a6; --accent:#5e8bff; --good:#22c55e; --bad:#ef4444; }
+    </style>
+    """
+    st.markdown(base_css + (dark_css if enabled else ""), unsafe_allow_html=True)
 
 # -----------------------------
 # Small utils
@@ -249,33 +262,42 @@ with st.sidebar:
     stop_loss = st.number_input("Stop loss (%)", 1.0, 30.0, 5.0, 0.5)
     horizon_bars = st.slider("Bars to check for target hit (horizon)", 5, 60, 20, 1, help="Used for % success (hit-rate).")
 
-# Universe after extras (ensures AMD/ENPH etc. present)
+# Universe after extras
 UNIVERSE = build_universe(extra_tickers)
 
 left, right = st.columns([1.25, 1])
 
 # =============================
-# Left: Always-On Chart & "Live" Search
+# Left: Live Search & Chart (runner animates when fetching)
 # =============================
 with left:
     st.subheader("🔎 Live Search & Chart")
-    col_a, col_b = st.columns([0.65, 0.35])
 
+    col_a, col_b = st.columns([0.65, 0.35])
     with col_a:
         manual_symbol = st.text_input("Type a ticker and press Enter", value="AMD").strip().upper()
     with col_b:
+        # Runner animates only if fetching or scanning
+        running = st.session_state.is_fetching or st.session_state.is_scanning
         st.markdown('<div class="small">Live search</div>', unsafe_allow_html=True)
-        st.markdown('🏃‍♂️<span class="runner"> </span>', unsafe_allow_html=True)
+        st.markdown(f'🏃‍♂️<span class="runner {"run" if running else ""}"> </span>', unsafe_allow_html=True)
 
     # Also offer dropdown of full S&P 500
-    dropdown_symbol = st.selectbox("…or pick from S&P 500", UNIVERSE, index=min(UNIVERSE.index("AAPL") if "AAPL" in UNIVERSE else 0, len(UNIVERSE)-1))
+    default_index = UNIVERSE.index("AAPL") if "AAPL" in UNIVERSE else 0
+    dropdown_symbol = st.selectbox("…or pick from S&P 500", UNIVERSE, index=min(default_index, len(UNIVERSE)-1))
 
-    symbol = manual_symbol or dropdown_symbol
-    tradingview_iframe(symbol, tf_map[chart_timeframe], range_map[chart_timeframe], chart_theme, height=560)
+    # Detect if the manual symbol changed → set fetching flag for this run
+    typed_symbol = manual_symbol or dropdown_symbol
+    if typed_symbol != st.session_state.last_symbol:
+        st.session_state.is_fetching = True
+
+    # Show TradingView chart
+    tradingview_iframe(typed_symbol, tf_map[chart_timeframe], range_map[chart_timeframe], chart_theme, height=560)
 
     # Manual symbol analysis (daily for stability)
     try:
-        df_m = yf.download(symbol, period="1y", interval="1d", auto_adjust=False, progress=False)
+        with st.spinner("Fetching symbol data…"):
+            df_m = yf.download(typed_symbol, period="1y", interval="1d", auto_adjust=False, progress=False)
         if df_m is None or df_m.empty:
             st.warning("No Yahoo data for this symbol.")
         else:
@@ -302,7 +324,7 @@ with left:
             stp = price * (1 - stop_loss/100)
             rr = (tgt - price) / max(price - stp, 1e-9)
 
-            st.markdown(f"### {symbol} &nbsp; {signal_badge}", unsafe_allow_html=True)
+            st.markdown(f"### {typed_symbol} &nbsp; {signal_badge}", unsafe_allow_html=True)
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Price", f"${fmt(price,2)}")
             c2.metric("% Success", f"{fmt(hit_rate,1)}%", help=f"Hit-rate to reach +{target_gain:.1f}% within {horizon_bars} bars (n={samples}).")
@@ -313,9 +335,13 @@ with left:
             st.caption(f"RSI(14) {fmt(rsi14,1)} | EMA20>EMA50 {'✅' if ema20>ema50 else '❌'} | EMA50>EMA200 {'✅' if ema50>ema200 else '❌'} | MACD−Signal {fmt(macd_val-macd_sig,3)} | BB %B {fmt(pctb,2)}")
     except Exception:
         st.warning("Unable to analyze this symbol.")
+    finally:
+        # Clear fetching flag and remember symbol
+        st.session_state.is_fetching = False
+        st.session_state.last_symbol = typed_symbol
 
 # =============================
-# Right: Top-10 Scan + Earnings/Dividends
+# Right: Top-10 Scan + Earnings/Dividends (runner animates while scanning)
 # =============================
 with right:
     st.subheader("🏆 Top 10 Scan")
@@ -334,6 +360,7 @@ with right:
     run = st.button("🚀 Run Scan")
 
     if run:
+        st.session_state.is_scanning = True
         period, interval = scan_tf_to_period["1D"] if speed_mode.startswith("Quick") else scan_tf_to_period[scan_tf]
         symbols = UNIVERSE[:max_scan]
 
@@ -353,13 +380,15 @@ with right:
                 continue
             score = score_row(last)
 
+            shares = int(st.session_state.get("investment_amount", 1000) // close)  # fallback
+            # Use sidebar value directly
             shares = int(investment_amount // close) if close > 0 else 0
             tgt_price = close * (1 + target_gain/100)
             stop_price = close * (1 - stop_loss/100)
             potential_profit = (tgt_price - close) * shares
 
             # % Success
-            hz = horizon_bars if interval == "1d" else max(10, min(60, horizon_bars))
+            hz = 20 if interval == "1d" else max(10, min(60, 20))
             hit_rate, samples = forward_hit_rate_for_target(ind["Close"], target_gain/100, horizon_bars=hz)
 
             rows.append({
@@ -400,13 +429,18 @@ with right:
             dfres = pd.DataFrame(rows).sort_values(["Score","% Success"], ascending=[False, False]).head(10).reset_index(drop=True)
             st.dataframe(dfres, use_container_width=True)
 
+            # Quick chart for a selected Top-10 symbol using current chart timeframe
             pick = st.selectbox("📊 View Top-10 chart:", dfres["Symbol"], index=0)
-            tradingview_iframe(pick, {"1m":"1","5m":"5","15m":"15","30m":"30","1h":"60","1D":"D"}[scan_tf], {"1m":"1D","5m":"5D","15m":"5D","30m":"1M","1h":"3M","1D":"6M"}[scan_tf], chart_theme, height=420)
+            tradingview_iframe(pick, tf_map[chart_timeframe], range_map[chart_timeframe], chart_theme, height=420)
 
         st.markdown("### 📅 Earnings Today")
         st.dataframe(pd.DataFrame(todays_earnings) if todays_earnings else pd.DataFrame([{"Symbol":"—"}]), use_container_width=True)
 
         st.markdown("### 💸 Dividends Today")
         st.dataframe(pd.DataFrame(todays_divs) if todays_divs else pd.DataFrame([{"Symbol":"—"}]), use_container_width=True)
+
+        # Clear scanning flag at the very end
+        st.session_state.is_scanning = False
+
 
 
