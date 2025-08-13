@@ -3,8 +3,9 @@
 # - Always-on chart + search
 # - BUY/NEUTRAL/SELL + % success for typed ticker
 # - Top 10 scan (batched), indicators (RSI, MACD, EMA20/50/200, Bollinger)
-# - Dark UI toggle with high-contrast text (fixed)
-# - Compact metrics (smaller numbers under the chart)
+# - True Light/Dark UI with correct text colors (black in light, white in dark)
+# - Styled blue Run Scan button and blue ticker title accent
+# - Compact metrics
 # - TradingView earnings calendar (US)
 # Educational use only — not financial advice.
 
@@ -21,59 +22,92 @@ import yfinance as yf
 st.set_page_config(page_title="S&P 500 Scanner Pro", page_icon="📈", layout="wide")
 
 def inject_css(dark_enabled: bool):
+    # Base styles (shared) + light/dark overrides
     base = """
     <style>
       :root {
-        --bg:#ffffff; --panel:#f6f7fb; --text:#0f172a; --muted:#6b7280;
-        --accent:#5e8bff; --good:#22c55e; --bad:#ef4444;
+        --blue:#2563eb;          /* primary accent */
+        --blue-contrast:#ffffff; /* button text */
+        --good:#22c55e; --bad:#ef4444;
       }
 
-      /* metric sizing (compact) */
-      div[data-testid="stMetric"] {
-        padding: .25rem .5rem;
-      }
-      div[data-testid="stMetricValue"] {
-        font-size: 1.2rem;            /* smaller values */
-        line-height: 1.2rem;
-      }
-      div[data-testid="stMetricLabel"] {
-        font-size: .8rem;              /* smaller labels */
-        color: var(--muted);
-      }
+      /* Compact metrics */
+      div[data-testid="stMetric"] { padding:.25rem .5rem; }
+      div[data-testid="stMetricValue"] { font-size:1.2rem; line-height:1.2rem; }
+      div[data-testid="stMetricLabel"] { font-size:.85rem; }
 
-      /* badges */
+      /* Badges */
       .buy-badge { background: rgba(34,197,94,.15); color:#22c55e; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
       .sell-badge { background: rgba(239,68,68,.15); color:#ef4444; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
-      .neutral-badge { background: rgba(94,139,255,.15); color:#5e8bff; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
+      .neutral-badge { background: rgba(37,99,235,.15); color:#2563eb; padding:.35rem .6rem; border-radius:999px; font-weight:700; display:inline-block; }
 
-      .small { color: var(--muted); font-size:.9rem; }
       .tv-card { border-radius:12px; overflow:hidden; }
 
-      /* make select/search controls a bit tighter */
-      .stTextInput, .stSelectbox { margin-bottom: .5rem; }
+      /* Blue primary button (Run Scan) */
+      div.stButton > button {
+        background: var(--blue) !important;
+        color: var(--blue-contrast) !important;
+        border: 1px solid var(--blue) !important;
+      }
+      div.stButton > button:hover {
+        filter: brightness(0.95);
+      }
+
+      /* Blue accent for ticker heading */
+      .ticker-accent { color: var(--blue); font-weight:700; }
+
+      /* Make input/select spacing a bit tighter */
+      .stTextInput, .stSelectbox, .stNumberInput, .stRadio, .stSlider { margin-bottom:.5rem; }
+    </style>
+    """
+    light = """
+    <style>
+      :root {
+        --bg:#ffffff; --panel:#f6f7fb; --text:#000000; --muted:#374151;
+      }
+      html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
+      [data-testid="stSidebar"] { background: var(--panel) !important; }
+
+      /* Force BLACK text everywhere in light mode */
+      label, .stMarkdown, .stRadio, .stSlider, .stSelectbox, .stNumberInput, .stTextInput,
+      div, span, p { color: var(--text) !important; }
+
+      /* Inputs / selects background & borders */
+      .stTextInput input, .stNumberInput input {
+        color: var(--text) !important; background: #ffffff !important; border-color: #cbd5e1 !important;
+      }
+      /* BaseWeb select (Streamlit uses BaseWeb) */
+      div[data-baseweb="select"] > div { background:#ffffff !important; border-color:#cbd5e1 !important; }
+      div[role="combobox"] * { color: var(--text) !important; }
+
+      /* Metric label/value to black */
+      div[data-testid="stMetricValue"], div[data-testid="stMetricLabel"] { color: var(--text) !important; }
     </style>
     """
     dark = """
     <style>
       :root {
         --bg:#0e1117; --panel:#161a23; --text:#ffffff; --muted:#c8c8c8;
-        --accent:#5e8bff; --good:#22c55e; --bad:#ef4444;
       }
       html, body, [data-testid="stAppViewContainer"] { background: var(--bg) !important; color: var(--text) !important; }
       [data-testid="stSidebar"] { background: var(--panel) !important; }
-      /* Text colors in inputs, dropdowns, labels, sliders */
-      label, .stMarkdown, .stRadio, .stSlider, .stSelectbox, .stNumberInput, .stTextInput { color: var(--text) !important; }
-      /* Text inputs */
-      .stTextInput input { color: var(--text) !important; background: #11141a !important; border-color: #2a2f3a !important; }
-      .stNumberInput input { color: var(--text) !important; background: #11141a !important; border-color: #2a2f3a !important; }
-      /* Select boxes (BaseWeb) */
+
+      /* Force WHITE text everywhere in dark mode */
+      label, .stMarkdown, .stRadio, .stSlider, .stSelectbox, .stNumberInput, .stTextInput,
+      div, span, p { color: var(--text) !important; }
+
+      /* Inputs / selects background & borders */
+      .stTextInput input, .stNumberInput input {
+        color: var(--text) !important; background: #11141a !important; border-color: #2a2f3a !important;
+      }
+      div[data-baseweb="select"] > div { background:#11141a !important; border-color:#2a2f3a !important; }
       div[role="combobox"] * { color: var(--text) !important; }
-      div[data-baseweb="select"] > div { background: #11141a !important; border-color: #2a2f3a !important; }
-      /* Metrics: label/value colors */
+
+      /* Metric label/value to white */
       div[data-testid="stMetricValue"], div[data-testid="stMetricLabel"] { color: var(--text) !important; }
     </style>
     """
-    st.markdown(base + (dark if dark_enabled else ""), unsafe_allow_html=True)
+    st.markdown(base + (dark if dark_enabled else light), unsafe_allow_html=True)
 
 # -----------------------------
 # Small utils
@@ -228,7 +262,7 @@ def download_batched(tickers, period, interval, batch_size=60):
 # -----------------------------
 # TradingView embeds
 # -----------------------------
-def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: str, height: int = 560):
+def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: str, height: int = 520):
     src = (
         "https://s.tradingview.com/widgetembed/?"
         f"symbol={tv_symbol(symbol)}&interval={interval_code}&range={range_code}"
@@ -243,7 +277,7 @@ def tradingview_iframe(symbol: str, interval_code: str, range_code: str, theme: 
         height=height, scrolling=False
     )
 
-def tradingview_earnings_widget(theme: str, height: int = 560):
+def tradingview_earnings_widget(theme: str, height: int = 500):
     cfg = {
         "width": "100%",
         "height": height,
@@ -267,7 +301,7 @@ def tradingview_earnings_widget(theme: str, height: int = 560):
 # =============================
 with st.sidebar:
     st.header("⚙️ Global Settings")
-    dark_ui = st.toggle("🌙 Dark UI (high contrast)", value=True)
+    dark_ui = st.toggle("🌙 Dark UI (true contrast)", value=True)
     inject_css(dark_ui)
 
     extra_tickers = st.text_input("Force-include extra tickers (comma)", value="AMD, ENPH")
@@ -285,13 +319,6 @@ with st.sidebar:
                              help="Used for % success (hit-rate).")
 
 # Build universe
-def build_universe(extra_csv: str):
-    base = set(sp500_from_yf())
-    wiki = set(sp500_from_wiki_if_available())
-    universe = sorted(list(base.union(wiki))) or ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM"]
-    extras = [s.strip().upper() for s in extra_csv.split(",") if s.strip()] if extra_csv else []
-    return sorted(list(set(universe + extras)))
-
 UNIVERSE = build_universe(extra_tickers)
 
 left, right = st.columns([1.25, 1])
@@ -337,7 +364,7 @@ with left:
             stp = price * (1 - st.session_state.stop_loss/100)
             rr = (tgt - price) / max(price - stp, 1e-9)
 
-            st.markdown(f"### {symbol} &nbsp; {signal_badge}", unsafe_allow_html=True)
+            st.markdown(f"### <span class='ticker-accent'>{symbol}</span> &nbsp; {signal_badge}", unsafe_allow_html=True)
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Price", f"${fmt(price,2)}")
             c2.metric("% Success", f"{fmt(hit_rate,1)}%", help=f"Hit-rate to reach +{st.session_state.target_gain:.1f}% within {st.session_state.horizon_bars} bars (n={samples}).")
@@ -361,7 +388,7 @@ with right:
         "30m": ("1mo", "30m"), "1h": ("3mo", "1h"), "1D": ("1y", "1d"),
     }
     max_scan = st.slider("Max symbols to scan", 50, 505, 505, 5)
-    run = st.button("🚀 Run Scan")
+    run = st.button("🚀 Run Scan", use_container_width=True)
 
     if run:
         period, interval = (scan_tf_to_period["1D"] if speed_mode.startswith("Quick") else scan_tf_to_period[scan_tf])
