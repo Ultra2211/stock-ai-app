@@ -41,15 +41,26 @@ def run_backtest(_df):
     df['EMA_cross_below'] = (df['EMA20'].shift(1) > df['EMA50'].shift(1)) & (df['EMA20'] < df['EMA50'])
 
     for i in range(len(df)):
+        # Ensure we don't have NaN values for our conditions
+        is_ema_cross_below = df['EMA_cross_below'].iloc[i]
+        is_ema_cross_above = df['EMA_cross_above'].iloc[i]
+        current_close = df['Close'].iloc[i]
+        current_sma200 = df['SMA200'].iloc[i]
+        current_rsi = df['RSI'].iloc[i]
+
+        if np.isnan(current_sma200) or np.isnan(current_rsi):
+            continue
+
         if in_position:
-            if df['Close'].iloc[i] >= buy_price * 1.10 or df['EMA_cross_below'].iloc[i]:
-                sell_price = df['Close'].iloc[i]
+            if current_close >= buy_price * 1.10 or is_ema_cross_below:
+                sell_price = current_close
                 trades.append({'buy_date': buy_date, 'sell_date': df.index[i], 'buy_price': buy_price, 'sell_price': sell_price, 'profit': (sell_price - buy_price) / buy_price})
                 in_position = False
-        if not in_position:
-            if df['EMA_cross_above'].iloc[i] and df['Close'].iloc[i] > df['SMA200'].iloc[i] and df['RSI'].iloc[i] < 70:
+        # Use elif to prevent selling and buying on the same day
+        elif not in_position:
+            if is_ema_cross_above and current_close > current_sma200 and current_rsi < 70:
                 in_position = True
-                buy_price = df['Close'].iloc[i]
+                buy_price = current_close
                 buy_date = df.index[i]
 
     if not trades:
@@ -63,13 +74,16 @@ def plot_signals(df, trades_df):
     fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], mode='lines', name='20-day EMA', line=dict(color='orange')))
     fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], mode='lines', name='50-day EMA', line=dict(color='purple')))
     fig.add_trace(go.Scatter(x=df.index, y=df['SMA200'], mode='lines', name='200-day SMA', line=dict(color='gray', dash='dash')))
-    buy_signals = trades_df[trades_df['profit'] != 0] # Filter out open trades for plotting
-    fig.add_trace(go.Scatter(x=buy_signals['buy_date'], y=buy_signals['buy_price'], mode='markers', marker_symbol='triangle-up', marker_color='green', marker_size=12, name='Buy Signal'))
-    fig.add_trace(go.Scatter(x=buy_signals['sell_date'], y=buy_signals['sell_price'], mode='markers', marker_symbol='triangle-down', marker_color='red', marker_size=12, name='Sell Signal'))
+
+    # Use the trades_df directly for plotting, it only contains closed trades
+    if not trades_df.empty:
+        fig.add_trace(go.Scatter(x=trades_df['buy_date'], y=trades_df['buy_price'], mode='markers', marker_symbol='triangle-up', marker_color='green', marker_size=12, name='Buy Signal'))
+        fig.add_trace(go.Scatter(x=trades_df['sell_date'], y=trades_df['sell_price'], mode='markers', marker_symbol='triangle-down', marker_color='red', marker_size=12, name='Sell Signal'))
+
     fig.update_layout(title='Stock Price with Buy/Sell Signals', xaxis_title='Date', yaxis_title='Price', legend_title='Legend', template='plotly_dark')
     return fig
 
-def run_analysis(ticker):
+def display_analysis_results(ticker):
     try:
         data = yf.download(ticker, period="5y", progress=False)
         if data.empty:
@@ -97,9 +111,8 @@ st.set_page_config(page_title="Stock Signal App", layout="wide")
 st.title("📈 Stock Investment Signal Analyzer")
 st.write("This app backtests a trading strategy and is for educational purposes only. It does not provide financial advice.")
 
-# Initialize session state
 if 'selected_ticker' not in st.session_state:
-    st.session_state.selected_ticker = 'MSFT'
+    st.session_state.selected_ticker = ''
 
 with st.expander("ℹ️ About the Strategy"):
     st.write("""
@@ -110,8 +123,6 @@ with st.expander("ℹ️ About the Strategy"):
 # --- Screener Section ---
 st.header("🔍 S&P 500 Stock Screener")
 if st.button("Scan S&P 500 for Top 10 Stocks"):
-    st.session_state.screener_ran = True
-    st.session_state.screener_results = None
     tickers = get_sp500_tickers()
     if tickers:
         results = []
@@ -145,20 +156,23 @@ if 'screener_results' in st.session_state and st.session_state.screener_results 
     st.subheader("Top 10 Screener Results")
     for index, row in st.session_state.screener_results.iterrows():
         col1, col2, col3, col4 = st.columns([1, 2, 2, 2])
-        with col1:
-            st.text(row['Ticker'])
-        with col2:
-            st.text(f"Success: {row['Success Rate (%)']:.2f}%")
-        with col3:
-            st.text(f"Trades: {row['Trades']}")
-        with col4:
-            if st.button("View Details", key=f"details_{row['Ticker']}"):
-                st.session_state.selected_ticker = row['Ticker']
-                # The script will rerun and the analysis section will pick up the new ticker
+        col1.text(row['Ticker'])
+        col2.text(f"Success: {row['Success Rate (%)']:.2f}%")
+        col3.text(f"Trades: {row['Trades']}")
+        if col4.button("View Details", key=f"details_{row['Ticker']}"):
+            st.session_state.selected_ticker = row['Ticker']
 
 # --- Detailed Analysis Section ---
 st.header("📊 Detailed Stock Analysis")
 ticker_input = st.text_input("Enter a stock ticker:", value=st.session_state.selected_ticker, key="ticker_input").upper()
 
-if ticker_input:
-    run_analysis(ticker_input)
+if st.button("Analyze Ticker", key="analyze_button"):
+    if ticker_input:
+        display_analysis_results(ticker_input)
+    else:
+        st.warning("Please enter a ticker symbol.")
+
+# If a ticker was selected from the screener, run the analysis automatically once
+if st.session_state.selected_ticker and st.session_state.selected_ticker != st.session_state.get('last_analyzed', ''):
+    st.session_state.last_analyzed = st.session_state.selected_ticker
+    display_analysis_results(st.session_state.selected_ticker)
